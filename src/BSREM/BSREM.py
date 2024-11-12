@@ -11,9 +11,15 @@ import numpy
 import os
 import sirf.STIR as STIR
 from sirf.Utilities import examples_data_path
+import numpy as np
 
 from cil.optimisation.algorithms import Algorithm 
 from cil.framework import DataContainer, BlockDataContainer
+
+from .preconditioners import *
+
+# import abc
+from abc import ABC, abstractmethod
 
 import time
 from contextlib import contextmanager
@@ -25,10 +31,10 @@ def timing(label: str):
     yield lambda: None  # This yields a do-nothing function to satisfy the 'with' syntax
     t1 = time.time()
     print(f'{label}: {t1 - t0:.6f} seconds')
-
+    
 class BSREMSkeleton(Algorithm):
-    def __init__(self, initial, initial_step_size, num_subsets,
-                 relaxation_eta, stochastic=False, with_replacement=False, 
+    def __init__(self, initial, initial_step_size, num_subsets, preconditioner = None,
+                 relaxation_eta = 0, stochastic=False, with_replacement=False, 
                  save_images=True, prior_is_subset=False, update_max = 100, probabilities = None,
                   **kwargs):
 
@@ -63,7 +69,7 @@ class BSREMSkeleton(Algorithm):
             self.average_sensitivity += self.subset_sensitivity(s)
         # add a small number to avoid division by zero in the preconditioner
         self.average_sensitivity /= self.num_subsets
-        self.average_sensitivity.maximum(self.eps, out=self.average_sensitivity)
+        self.average_sensitivity += self.eps
         print('Done computing average sensitivity')
 
         # inititalise subset for ordered so we start from the beginning
@@ -78,6 +84,14 @@ class BSREMSkeleton(Algorithm):
         self.save_images = save_images
 
         self.probabilities = probabilities
+        
+        if preconditioner is None:
+            if self.prior_is_subset:
+                self.preconditioner = ConditionalPreconditioner([BSREMPreconditioner(self.eps), HessianDiagPreconditionerBSREMPrior()])
+            else:
+                self.preconditioner = HarmonicMeanPreconditionerBSREMPrior(update_interval=self.num_subsets, eps = self.eps)
+        else:
+            self.preconditioner = preconditioner
 
         self.configured = True
 
@@ -113,9 +127,6 @@ class BSREMSkeleton(Algorithm):
             update_arr = x.as_array()
             update_arr[update_arr > self.update_max] = self.eps
             x.fill(update_arr)
-            
-    def calculate_preconditioner(self):
-        return self.x / self.average_sensitivity + self.eps
         
     def update(self):
 
@@ -130,12 +141,13 @@ class BSREMSkeleton(Algorithm):
         g = self.subset_gradient(self.subset)
 
         # calculate our image update
-        self.x_update = self.step_size() * self.calculate_preconditioner() * g
+        precond  = self.preconditioner(self)
+        self.x_update = self.step_size() * precond * g
         self.limit_size(self.x_update) # necessary because of some bugs somewhere
 
         self.FOV_filter(self.x_update)
         self.x += self.x_update
-        self.x.maximum(self.eps, out=self.x)
+        self.x.maximum(0, out=self.x)
             
     def choose_subset(self):
         """Selects the next subset based on configuration parameters."""
@@ -309,13 +321,6 @@ class BSREMmm_of(BSREMSkeleton):
         if self.svrg and self.saga:
             print("Can't be SVRG and SAGA! SVRG a coming")
             self.saga=False
-
-        # write average_sensitivity
-        if isinstance(self.average_sensitivity, BlockDataContainer):
-            for i, el in enumerate(self.average_sensitivity):
-                el.write(os.path.join(self.save_path, f'average_sensitivity_{i}.hv'))
-        else:
-            self.average_sensitivity.write(os.path.join(self.save_path, 'average_sensitivity.hv'))
             
         self.update_objective()
 
@@ -447,6 +452,9 @@ class BSREMmm_of(BSREMSkeleton):
     def add_images(self):
         """ Method to save images from the current iteration, including gradient images if using SVRG. """
         self.write_image(self.x, 'image')
+        
+        # write preconditioner image
+        self.write_image(self.preconditioner(self), 'preconditioner')
         
         # If SVRG is enabled, write the gradient images as well
         if self.svrg or self.saga:

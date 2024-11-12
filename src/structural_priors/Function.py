@@ -292,13 +292,11 @@ class OperatorCompositionFunction(Function):
     def proximal_conjugate(self, x, tau):
         return self.operator.adjoint(self.function.proximal_conjugate(self.operator.direct(x), tau))
     
-    def hessian(self, x):
-        ones = x.clone().power(0)
-        direct_x = self.operator.direct(x)
-        direct_ones = self.operator.direct(ones)
-        hessian_matrix = self.function.hessian(direct_x)
-        scaled_hessian = hessian_matrix * direct_ones
-        return self.operator.adjoint(scaled_hessian)
+    def hessian_diag(self, x):
+        return self.operator.adjoint(self.function.hessian_diag(self.operator.direct(x)))
+    
+    def inv_hessian_diag(self, x):
+        return self.operator.adjoint(self.function.inv_hessian_diag(self.operator.direct(x)))
 
 
 def test_proximal(function, shape, num_tests, tau, epsilon=1e-5, print_output=True, conjugate=False):

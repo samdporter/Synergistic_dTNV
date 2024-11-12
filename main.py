@@ -26,19 +26,19 @@ from cil.optimisation.operators import BlockOperator, ZeroOperator
 
 parser = argparse.ArgumentParser(description='BSREM')
 
-parser.add_argument('--alpha', type=float, default=256, help='alpha')
-parser.add_argument('--beta', type=float, default=0.1, help='beta')
+parser.add_argument('--alpha', type=float, default=128, help='alpha')
+parser.add_argument('--beta', type=float, default=0.05, help='beta')
 parser.add_argument('--delta', type=float, default=1e-6, help='delta')
 # num_subsets can be an integer or a string of two integers separated by a comma
 parser.add_argument('--num_subsets', type=str, default="12", help='number of subsets')
 parser.add_argument('--use_kappa', action='store_true', help='use kappa')
-parser.add_argument('--initial_step_size', type=float, default=1, help='initial step size')
+parser.add_argument('--initial_step_size', type=float, default=2, help='initial step size')
 
-parser.add_argument('--iterations', type=int, default=240, help='max iterations')
+parser.add_argument('--iterations', type=int, default=60, help='max iterations')
 parser.add_argument('--update_interval', type=int, default=12, help='update interval')
 parser.add_argument('--relaxation_eta', type=float, default=0.1, help='relaxation eta')
 
-parser.add_argument('--data_path', type=str, default="/home/sam/data/phantom_data/for_cluster", help='data path')
+parser.add_argument('--data_path', type=str, default="/home/storage/copied_data/data/phantom_data/for_cluster", help='data path')
 parser.add_argument('--output_path', type=str, default="/home/sam/working/BSREM_PSMR_MIC_2024/results/test", help='output path')
 parser.add_argument('--source_path', type=str, default='/home/sam/working/BSREM_PSMR_MIC_2024/src', help='source path')
 parser.add_argument('--working_path', type=str, default='/home/sam/working/BSREM_PSMR_MIC_2024/tmp', help='working path')
@@ -62,6 +62,8 @@ args = parser.parse_args()
 # Imports from my stuff and SIRF contribs
 sys.path.insert(0, args.source_path)
 from BSREM.BSREM import BSREMmm_of
+from BSREM.preconditioners import (ConditionalPreconditioner, FixedPreconditioner, 
+                                   HarmonicMeanPreconditionerBSREMPrior, HessianDiagPreconditionerBSREMPrior)
 from structural_priors.tmp_classes import (OperatorCompositionFunction,
                                                    ZoomOperator, CompositionOperator,
                                                     NiftyResampleOperator,
@@ -167,13 +169,13 @@ def get_objective_function(data, acq_model, initial_image, num_subsets):
 
 def get_vectorial_tv(bo, ct, alpha, beta, initial_estimates, delta, gpu=False, kappa=False):
     if kappa:
-        kappas = [k.as_array() for weight, k in zip([alpha, beta], kappa.containers)]
+        kappas = [np.reciprocal(k.as_array()) for weight, k in kappa.containers]
     else:
         kappas = None
     weights = [alpha, beta]
 
     vtv = create_vectorial_total_variation(smoothing_function='fair', eps=delta, gpu=gpu)
-    jac = NumpyBlockDataContainer(bo.direct(initial_estimates),Jacobian(anatomical=ct.as_array(), voxel_sizes=ct.voxel_sizes(), 
+    jac = NumpyBlockDataContainer(bo.direct(initial_estimates), Jacobian(anatomical=ct.as_array(), voxel_sizes=ct.voxel_sizes(), 
                                                                         gpu=gpu, weights=weights, kappas=None))
     jac_co = CompositionOperator([bo, jac])
     jac_co.range_geometry = lambda: initial_estimates

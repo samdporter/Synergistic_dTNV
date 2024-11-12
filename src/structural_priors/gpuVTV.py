@@ -170,8 +170,11 @@ def charbonnier_torch(x, eps):
 def charbonnier_grad_torch(x, eps):
     return x / torch.sqrt(x**2 + eps**2)
 
-def charbonnier_hessian_torch(x, eps):
+def charbonnier_hessian_diag_torch(x, eps):
     return eps**2 / (x**2 + eps**2)**(3/2)
+
+def charbinier_inv_hessian_diag_torch(x, eps):
+    return (x**2 + eps**2)**(3/2) / eps**2
 
 def fair_torch(x, eps):
     return eps * (torch.abs(x) / eps - torch.log(1 + torch.abs(x) / eps))
@@ -179,8 +182,11 @@ def fair_torch(x, eps):
 def fair_grad_torch(x, eps):
     return x / (eps + torch.abs(x))
 
-def fair_hessian_torch(x, eps):
+def fair_hessian_diag_torch(x, eps):
     return eps / (eps + torch.abs(x))**2
+
+def fair_inv_hessian_diag_torch(x, eps):
+    return (eps + torch.abs(x))**2 / eps
 
 def perona_malik_torch(x, eps):
     return eps/2 * (1 - torch.exp(-x**2 / eps**2))
@@ -188,9 +194,11 @@ def perona_malik_torch(x, eps):
 def perona_malik_grad_torch(x, eps):
     return x * torch.exp(-x**2 / eps**2) / eps**2
 
-def perona_malik_hessian_torch(x, eps):
-    ### need to check
-    return (1 - x**2 / eps**2) * torch.exp(-x**2 / eps**2) / eps**2
+def perona_malik_hessian_diag_torch(x, eps):
+    return (eps**2 - 2*x**2) * torch.exp(- x**2 / eps**2) / eps**3
+
+def perona_malik_inv_hessian_diag_torch(x, eps):
+    return eps**3 * torch.exp(x**2 / eps**2) / (eps**2 - 2*x**2)
 
 def nothing_torch(x, eps=0):
     return x
@@ -285,7 +293,7 @@ class GPUVectorialTotalVariation(Function):
     """ 
     GPU implementation of the vectorial total variation function.
     """
-    def __init__(self, eps=None, norm = 'nuclear', weights=None,
+    def __init__(self, eps=None, norm = 'nuclear',
                  smoothing_function=None, numpy_out=False):        
 
         """Initializes the GPUVectorialTotalVariation class.
@@ -297,22 +305,6 @@ class GPUVectorialTotalVariation(Function):
         self.norm = norm
         self.smoothing_function = smoothing_function
         self.numpy_out = numpy_out
-        self.weights = 1
-
-    def _apply_weights(self, x):
-            # if self.weights is list of scalars, multiply each channel by the corresponding scalar
-        if self.weights is not None:
-            if isinstance(self.weights, list):
-                for i, w in enumerate(self.weights):
-                    x[..., i, :] *= w
-            else:
-                # If self.weights is a single scalar, apply it to all channels
-                if self.weights != 1 and isinstance(self.weights, Number):
-                    x *= self.weights
-                else: 
-                    print('No weights applied')
-
-        return x
 
     def direct(self, x):
 
@@ -335,7 +327,7 @@ class GPUVectorialTotalVariation(Function):
         else:
             smoothing_func = nothing_torch
 
-        return vectorised_norm(self._apply_weights(x), norm_func, smoothing_func, order, self.eps)
+        return vectorised_norm(x, norm_func, smoothing_func, order, self.eps)
 
     def __call__(self, x):
         
@@ -363,7 +355,7 @@ class GPUVectorialTotalVariation(Function):
         else:
             raise ValueError('Norm not defined')
 
-        return vectorised_norm_func(self._apply_weights(x), norm_func, tau, order)
+        return vectorised_norm_func(x, norm_func, tau, order)
     
     def gradient(self, x):
 
@@ -384,9 +376,9 @@ class GPUVectorialTotalVariation(Function):
         else:
             raise ValueError('Smoothing function not defined')
 
-        return vectorised_norm_func(self._apply_weights(x), smoothing_func, self.eps, order)
+        return vectorised_norm_func(x, smoothing_func, self.eps, order)
 
-    def hessian(self, x):
+    def hessian_diag(self, x):
 
         if isinstance(x, np.ndarray):
             x = torch.tensor(x)
@@ -397,12 +389,33 @@ class GPUVectorialTotalVariation(Function):
         order =1 if x.shape[-2] <= x.shape[-1] else 0
         
         if self.smoothing_function == 'fair':
-            smoothing_func = fair_hessian_torch
+            smoothing_func = fair_hessian_diag_torch
         elif self.smoothing_function == 'charbonnier':
-            smoothing_func = charbonnier_hessian_torch
+            smoothing_func = charbonnier_hessian_diag_torch
         elif self.smoothing_function == 'perona_malik':
-            smoothing_func = perona_malik_hessian_torch
+            smoothing_func = perona_malik_hessian_diag_torch
         else:
             raise ValueError('Smoothing function not defined')
 
-        return vectorised_norm_func(self._apply_weights(x), smoothing_func, self.eps, order)
+        return vectorised_norm_func(x, smoothing_func, self.eps, order)
+    
+    def inv_hessian_diag(self, x):
+
+        if isinstance(x, np.ndarray):
+            x = torch.tensor(x)
+            
+        x.to(device)
+
+        # order defined by smallest of the last two dimensions
+        order =1 if x.shape[-2] <= x.shape[-1] else 0
+        
+        if self.smoothing_function == 'fair':
+            smoothing_func = fair_inv_hessian_diag_torch
+        elif self.smoothing_function == 'charbonnier':
+            smoothing_func = charbinier_inv_hessian_diag_torch
+        elif self.smoothing_function == 'perona_malik':
+            smoothing_func = perona_malik_inv_hessian_diag_torch
+        else:
+            raise ValueError('Smoothing function not defined')
+
+        return vectorised_norm_func(x, smoothing_func, self.eps, order)
