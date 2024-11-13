@@ -348,18 +348,22 @@ class SIRFBlockFunction(Function):
         return sum(f(el) for f, el in zip(self.functions, x.containers))
     
     def get_num_subsets(self):
-        return max(f.get_num_subsets() for f in self.functions)
+        return [f.get_num_subsets() for f in self.functions]
     
     def get_gradient(self, x):
         return BlockDataContainer(*[f.get_gradient(el) for f, el in zip(self.functions, x.containers)])
 
-    def get_single_subset_gradient(self, x, subset=0, modality=0):
+    def get_single_subset_gradient(self, x, subset, modality):
         return BlockDataContainer(*[f.get_subset_gradient(el, subset) if i == modality else \
             el.clone().fill(0) for i, f, el in zip(range(len(self.functions)), self.functions, x.containers)])
 
     def get_subset_gradient(self, x, subset=0):
         
         return BlockDataContainer(*[f.get_subset_gradient(el, subset) for f, el in zip(self.functions, x.containers)])   
+    
+    def get_single_subset_sensitivity(self, x, subset_num, modality=0):
+        return BlockDataContainer(*[f.get_subset_sensitivity(subset_num) if i == modality else \
+            el.clone().fill(0) for i, f, el in zip(range(len(self.functions)), self.functions, x.containers)])
    
     def get_subset_sensitivity(self, subset_num):
 

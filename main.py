@@ -30,12 +30,12 @@ parser.add_argument('--alpha', type=float, default=128, help='alpha')
 parser.add_argument('--beta', type=float, default=0.05, help='beta')
 parser.add_argument('--delta', type=float, default=1e-6, help='delta')
 # num_subsets can be an integer or a string of two integers separated by a comma
-parser.add_argument('--num_subsets', type=str, default="12", help='number of subsets')
+parser.add_argument('--num_subsets', type=str, default="18,32", help='number of subsets')
 parser.add_argument('--use_kappa', action='store_true', help='use kappa')
 parser.add_argument('--initial_step_size', type=float, default=2, help='initial step size')
 
-parser.add_argument('--iterations', type=int, default=60, help='max iterations')
-parser.add_argument('--update_interval', type=int, default=12, help='update interval')
+parser.add_argument('--iterations', type=int, default=250, help='max iterations')
+parser.add_argument('--update_interval', type=int, default=None, help='update interval')
 parser.add_argument('--relaxation_eta', type=float, default=0.1, help='relaxation eta')
 
 parser.add_argument('--data_path', type=str, default="/home/storage/copied_data/data/phantom_data/for_cluster", help='data path')
@@ -96,24 +96,24 @@ def get_filters():
 def get_pet_data(path):
 
     pet_data = {}
-    pet_data["acquisition_data"] = AcquisitionData(os.path.join(path,  "PET/projdata_bed0.hs"))
-    pet_data["additive"] = AcquisitionData(os.path.join(path,  "PET/additive3d_bed0_nonan.hs"))
-    pet_data["normalisation"] = AcquisitionData(os.path.join(path,  "PET/inv_normacfprojdata_bed0.hs"))
-    pet_data["initial_image"] = ImageData(os.path.join(path,  "PET/pet_osem_20.hv")).maximum(0)
+    pet_data["acquisition_data"] = AcquisitionData(os.path.join(path,  "PET/prompts.hs"))
+    pet_data["additive"] = AcquisitionData(os.path.join(path,  "PET/additive.hs"))
+    pet_data["normalisation"] = AcquisitionData(os.path.join(path,  "PET/mult_factors.hs"))
+    pet_data["initial_image"] = ImageData(os.path.join(path,  "PET/initial_image.hv")).maximum(0)
 
     return pet_data
 
 def get_spect_data(path):
 
     spect_data = {}
-    spect_data["acquisition_data"] = AcquisitionData(os.path.join(path,  "SPECT/peak_1_projdata__f1g1d0b0.hs"))
-    spect_data["additive"] = AcquisitionData(os.path.join(path,  "SPECT/simind_scatter_ellipses_megp_cpd.hs"))
-    spect_data["attenuation"] = ImageData(os.path.join(path,  "SPECT/umap_zoomed.hv"))
+    spect_data["acquisition_data"] = AcquisitionData(os.path.join(path,  "SPECT/peak.hs"))
+    spect_data["additive"] = AcquisitionData(os.path.join(path,  "SPECT/scatter.hs"))
+    spect_data["attenuation"] = ImageData(os.path.join(path,  "SPECT/umap.hv"))
     # Need to flip the attenuation image on the x-axis due to bug in STIR
     attn_arr = spect_data["attenuation"].as_array()
     attn_arr = np.flip(attn_arr, axis=-1)
     spect_data["attenuation"].fill(attn_arr)
-    spect_data["initial_image"] = ImageData(os.path.join(path,  "SPECT/spect_osem_20.hv")).maximum(0)
+    spect_data["initial_image"] = ImageData(os.path.join(path,  "SPECT/initial_image.hv")).maximum(0)
 
     return spect_data
 
@@ -197,25 +197,40 @@ os.chdir(args.working_path)
 
 def main(args):
 
-    # if single_modality_update is False, num_subsets must be integer
+    ### Some horrible stuff to enforce arguments and set up the problem ###
+    # Check if num_subsets is a comma-separated string with two values; if so, set single_modality_update to True
+    if isinstance(args.num_subsets, str):
+        num_subsets = args.num_subsets
+        subset_list = num_subsets.split(",")
+        if len(subset_list) == 2:
+            args.single_modality_update = True
+        elif len(subset_list) == 1:
+            # If there is only one subset value, allow single_modality_update to remain False
+            try:
+                args.num_subsets = int(subset_list[0])
+            except ValueError:
+                raise ValueError("num_subsets must be an integer if single_modality_update is False")
+
+    # Ensure num_subsets is an integer if single_modality_update is False
     if not args.single_modality_update:
-        try:
-            args.num_subsets = int(args.num_subsets)
-        except:
+        if not isinstance(args.num_subsets, Number):
             raise ValueError("num_subsets must be an integer if single_modality_update is False")
+
+    # Set pet_num_subsets and spect_num_subsets based on num_subsets type
     if isinstance(args.num_subsets, Number):
         pet_num_subsets = int(args.num_subsets)
         spect_num_subsets = int(args.num_subsets)
     elif isinstance(args.num_subsets, str):
-        num_subsets = args.num_subsets
-        subset_list = num_subsets.split(",")
-        # if list is lenght one, set both to the same value
-        if len(subset_list) == 1:
-            pet_num_subsets = int(subset_list[0])
-            spect_num_subsets = int(subset_list[0])
+        # We already checked for two values above, so we know this is a list of two
+        pet_num_subsets = int(subset_list[0])
+        spect_num_subsets = int(subset_list[1])
+
+    # if update_interval is None, set to number of subsets (or sum of subsets if single_modality_update is True)
+    if args.update_interval is None:
+        if args.single_modality_update:
+            args.update_interval = (pet_num_subsets + spect_num_subsets)//2
         else:
-            pet_num_subsets = int(subset_list[0])
-            spect_num_subsets = int(subset_list[1])
+            args.update_interval = pet_num_subsets
 
     cyl, gauss, = get_filters()
     ct = ImageData(os.path.join(args.data_path, "CT/ct_zoomed_smallFOV.hv"))
@@ -266,17 +281,24 @@ def main(args):
 
     prior = get_vectorial_tv(bo, ct, args.alpha, args.beta, initial_estimates, delta=args.delta, gpu=args.gpu, kappa=kappa)
 
+    hessian_diag = prior.hessian_diag(initial_estimates)
+    for i, el in enumerate(hessian_diag.containers):
+        el.write(f"hessian_diag_{i}.hv")
+
+    quit()
+
     pet2spect_zero = ZeroOperator(pet_data["initial_image"], spect_data["acquisition_data"])
     spect2pet_zero = ZeroOperator(spect_data["initial_image"], pet_data["acquisition_data"])
 
     acquisition_model = BlockOperator(pet_am, spect2pet_zero,
                                         pet2spect_zero, spect_am,
                                     shape=(2,2)) 
-    data = BlockDataContainer(pet_data["acquisition_data"], spect_data["acquisition_data"])
 
     initial = initial_estimates
         
     acquisition_model.is_linear = MethodType(lambda self: True, acquisition_model)
+
+    print(f"num subsets: {pet_num_subsets}, {spect_num_subsets}")
         
     bsrem=BSREMmm_of(SIRFBlockFunction([pet_obj_fun, spect_obj_fun]), prior, 
                         initial=initial, initial_step_size=args.initial_step_size, relaxation_eta=args.relaxation_eta, 

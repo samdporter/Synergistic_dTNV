@@ -17,19 +17,21 @@ class BSREMPreconditioner(Preconditioner):
         return self.calculate_preconditioner(algorithm.x)
     
     def calculate_preconditioner(self, algorithm):
-        return algorithm.x / (algorithm.average_sensitivity) + self.eps 
+        return (algorithm.x + self.eps) * algorithm.inv_average_sensitivity
     
 class HarmonicMeanPreconditionerBSREMPrior(Preconditioner):
-    def __init__(self, update_interval, eps):
+    def __init__(self, update_interval, preconds):
         self.update_interval = update_interval
         self.precond = None   
-        self.eps = eps
+        self.preconds = preconds
         
     def __call__(self, algorithm):
         return self.calculate_preconditioner(algorithm) if self.precond is None or algorithm.iteration % self.update_interval == 0 else self.precond
     
     def calculate_preconditioner(self, algorithm):
-        self.precond = 2 * algorithm.x / (algorithm.average_sensitivity + algorithm.x * algorithm.prior.hessian_diag(algorithm.x).abs()) + self.eps
+        a = self.preconds[0].calculate_preconditioner(algorithm)
+        b = self.preconds[1].calculate_preconditioner(algorithm)
+        self.precond = 2 * a * b / (a + b)
         return self.precond
     
 class HessianDiagPreconditionerBSREMPrior(Preconditioner):

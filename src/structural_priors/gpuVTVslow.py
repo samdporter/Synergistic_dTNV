@@ -95,7 +95,7 @@ class GPUVectorialTotalVariation(Function):
     GPU implementation of the vectorial total variation function.
     """
     def __init__(self, eps=0, norm = 'nuclear', smoothing_function=None, weights=None,
-                 numpy_out=False):        
+                 numpy_out=True):        
 
         """Initializes the GPUVectorialTotalVariation class.
         """        
@@ -144,7 +144,7 @@ class GPUVectorialTotalVariation(Function):
         else:
             raise ValueError('Norm not defined')
 
-        return vectorised_norm_func(x, norm_func, tau).numpy() if self.numpy_out else vectorised_norm_func(x, norm_func, tau)
+        return vectorised_norm_func(x, norm_func, tau)
 
     def gradient(self, x):
 
@@ -160,7 +160,7 @@ class GPUVectorialTotalVariation(Function):
         else:
             raise ValueError('Smoothing function not defined')
 
-        return vectorised_norm_func(x, smoothing_func, self.eps).cpu().numpy() if self.numpy_out else vectorised_norm_func(x, smoothing_func, self.eps)
+        return vectorised_norm_func(x, smoothing_func, self.eps)
     
     def hessian_diag(self, x):
 
@@ -176,7 +176,7 @@ class GPUVectorialTotalVariation(Function):
         else:
             raise ValueError('Smoothing function not defined')
 
-        return vectorised_norm_func(x, smoothing_func, self.eps).numpy() if self.numpy_out else vectorised_norm_func(x, smoothing_func, self.eps)
+        return vectorised_norm_func(x, smoothing_func, self.eps)
     
     def inv_hessian_diag(self, x):
 
@@ -192,4 +192,4 @@ class GPUVectorialTotalVariation(Function):
         else:
             raise ValueError('Smoothing function not defined')
 
-        return vectorised_norm_func(x, smoothing_func, self.eps).numpy() if self.numpy_out else vectorised_norm_func(x, smoothing_func, self.eps)
+        return vectorised_norm_func(x, smoothing_func, self.eps)

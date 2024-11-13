@@ -56,21 +56,10 @@ class BSREMSkeleton(Algorithm):
         self.with_replacement = with_replacement
         self.prior_is_subset = prior_is_subset
         
-        self.num_subsets = num_subsets
+        self.num_subsets = sum(num_subsets) if isinstance(num_subsets, (list, tuple)) else num_subsets
         self.update_max = update_max
 
-        # compute small number to add to image in preconditioner
-        # don't make it too small as otherwise the algorithm cannot recover from zeroes.
-        self.eps = initial.max()/1e6
-        self.limit_size(self.x)
-        self.average_sensitivity = initial.get_uniform_copy(0)
-        print('Computing average sensitivity')
-        for s in range(self.num_subsets):
-            self.average_sensitivity += self.subset_sensitivity(s)
-        # add a small number to avoid division by zero in the preconditioner
-        self.average_sensitivity /= self.num_subsets
-        self.average_sensitivity += self.eps
-        print('Done computing average sensitivity')
+        self.compute_average_sensitivity()
 
         # inititalise subset for ordered so we start from the beginning
         self.subset = -1
@@ -89,11 +78,33 @@ class BSREMSkeleton(Algorithm):
             if self.prior_is_subset:
                 self.preconditioner = ConditionalPreconditioner([BSREMPreconditioner(self.eps), HessianDiagPreconditionerBSREMPrior()])
             else:
-                self.preconditioner = HarmonicMeanPreconditionerBSREMPrior(update_interval=self.num_subsets, eps = self.eps)
+                self.preconditioner = HarmonicMeanPreconditionerBSREMPrior(update_interval=self.num_subsets, preconds = [BSREMPreconditioner(self.eps), HessianDiagPreconditionerBSREMPrior()])
         else:
             self.preconditioner = preconditioner
 
         self.configured = True
+
+    def compute_average_sensitivity(self):
+        # compute small number to add to image in preconditioner
+        # don't make it too small as otherwise the algorithm cannot recover from zeroes.
+        self.eps = self.x.max()/1e6
+        self.limit_size(self.x)
+        average_sensitivity = self.x.get_uniform_copy(0)
+        print('Computing average sensitivity')
+        for s in range(self.num_subsets):
+            average_sensitivity += self.subset_sensitivity(s)
+        # add a small number to avoid division by zero in the preconditioner
+        self.inv_average_sensitivity = average_sensitivity.copy()
+        if isinstance(self.inv_average_sensitivity, BlockDataContainer):
+            for i, el in enumerate(self.inv_average_sensitivity.containers):
+                el_arr = el.as_array()
+                update_arr = np.reciprocal(el_arr, where = el_arr > 0)
+                el.fill(update_arr)
+        else:
+            avg_sens_arr = average_sensitivity.as_array()
+            inv_avg_sens_arr = np.reciprocal(avg_sens_arr, where = avg_sens_arr > 0)
+            self.inv_average_sensitivity.fill(inv_avg_sens_arr)
+        print('Done computing average sensitivity')
 
     def subset_sensitivity(self, subset_num):
         raise NotImplementedError
@@ -276,13 +287,25 @@ class BSREMmm_of(BSREMSkeleton):
 
         num_subsets = obj_fun.get_num_subsets()
 
+        print(f"Number of subsets: {num_subsets}")
+
+        # of single ,odality update is false, ensure that the number of subsets are equal and set num_subsets to the number of subsets for each modality
+        if not self.single_modality_update:
+            # ensure all subsets are the same size
+            if isinstance(num_subsets, (list, tuple)):
+                if not all([num_subsets[0] == s for s in num_subsets]):
+                    raise ValueError("All subsets must be the same size when using multiple modalities")
+                num_subsets = num_subsets[0]
+        else:
+            num_subsets = num_subsets
+
+        print(f"Number of subsets: {num_subsets}")
+
         super(BSREMmm_of, self).__init__(initial = initial, initial_step_size = initial_step_size, num_subsets = num_subsets,
                                          relaxation_eta = relaxation_eta, stochastic = stochastic, with_replacement = with_replacement,
                                          save_images = save_images, prior_is_subset = prior_is_subset, update_max = update_max, 
                                          probabilities=probabilities,  **kwargs)
             
-        if self.single_modality_update:
-            self.num_subsets *= len(initial.containers)
         if self.prior_is_subset:
             self.num_subsets += 1
             
@@ -330,6 +353,11 @@ class BSREMmm_of(BSREMSkeleton):
         ''' Compute sensitivity for a particular subset'''
         # note: sirf.STIR Poisson likelihood uses `get_subset_sensitivity(0) for the whole
         # sensitivity if there are no subsets in that likelihood
+        if self.single_modality_update:
+            modality, subset_within_modality = self.get_modality_indices(subset_num)
+            print(f"Computing sensitivity for modality {modality}, subset {subset_within_modality}")
+            return self.obj_fun.get_single_subset_sensitivity(self.x, subset_within_modality, modality)
+        print(f"Computing sensitivity for subset {subset_num + 1} of {self.num_subsets} subsets")
         return self.obj_fun.get_subset_sensitivity(subset_num)
 
     def subset_gradient(self, subset_num):
@@ -383,13 +411,30 @@ class BSREMmm_of(BSREMSkeleton):
         self.FOV_filter(general_gradient)
 
         return general_gradient
-
+    
     def get_modality_indices(self, subset_num):
-        modality = subset_num // self.obj_fun.get_num_subsets()
-        subset_within_modality = subset_num % self.obj_fun.get_num_subsets()
+        # Get the subset information from obj_fun
+        num_subsets = self.obj_fun.get_num_subsets()
+
+        # If only one subset count exists (num_subsets is an integer) i.e all subsets are of the same size
+        if isinstance(num_subsets, int):
+            modality = subset_num // num_subsets
+            subset_within_modality = subset_num % num_subsets
+        else:
+            # num_subsets is a list/tuple with subset counts in modality order [modality0, modality1, ...]
+            total_subsets = 0
+            for modality, s in enumerate(num_subsets):
+                if subset_num < total_subsets + s:
+                    subset_within_modality = subset_num - total_subsets
+                    break
+                total_subsets += s
+            else:
+                raise ValueError("Subset number exceeds the total number of subsets across modalities.")
+
+        # Print and return the modality and subset within that modality
         print(f"Modality {modality}, Subset {subset_within_modality}")
         return modality, subset_within_modality
-
+    
     def compute_modality_gradient(self, subset_within_modality, modality):
         with timing('subset gradient time'):
             o_grad = self.obj_fun.get_single_subset_gradient(self.x, subset_within_modality, modality)
@@ -461,4 +506,8 @@ class BSREMmm_of(BSREMSkeleton):
             self.write_image(self.g, 'g')
             #for i, el in enumerate(self.sg):
             #    self.write_image(el, f'sg_{i}')
+
+        # if first epoch, write inv_average_sensitivity
+        if self.epoch() == 0:
+            self.write_image(self.inv_average_sensitivity, 'inv_average_sensitivity')
         

@@ -336,7 +336,7 @@ class GPUVectorialTotalVariation(Function):
         else:
             x.to(device)
 
-        return torch.sum(self.direct(x)).cpu().numpy() if self.numpy_out else torch.sum(self.direct(x))
+        return torch.sum(self.direct(x)).cpu().numpy()
 
     def proximal(self, x, tau):
 
