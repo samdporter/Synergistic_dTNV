@@ -353,11 +353,6 @@ class BSREMmm_of(BSREMSkeleton):
         ''' Compute sensitivity for a particular subset'''
         # note: sirf.STIR Poisson likelihood uses `get_subset_sensitivity(0) for the whole
         # sensitivity if there are no subsets in that likelihood
-        if self.single_modality_update:
-            modality, subset_within_modality = self.get_modality_indices(subset_num)
-            print(f"Computing sensitivity for modality {modality}, subset {subset_within_modality}")
-            return self.obj_fun.get_single_subset_sensitivity(self.x, subset_within_modality, modality)
-        print(f"Computing sensitivity for subset {subset_num + 1} of {self.num_subsets} subsets")
         return self.obj_fun.get_subset_sensitivity(subset_num)
 
     def subset_gradient(self, subset_num):
@@ -380,24 +375,7 @@ class BSREMmm_of(BSREMSkeleton):
             self.FOV_filter(prior_gradient)
             return prior_gradient
 
-        if self.single_modality_update:
-            return self._compute_single_modality_subset_gradient(subset_num, prior_gradient)
-
         return self._compute_general_subset_gradient(subset_num, prior_gradient)
-
-    def _compute_single_modality_subset_gradient(self, subset_num, prior_gradient):
-        """Compute gradient for a specific modality subset."""
-        modality, subset_within_modality = self.get_modality_indices(subset_num)
-        modality_gradient = self.compute_modality_gradient(subset_within_modality, modality)
-
-        if not self.prior_is_subset:
-            if prior_gradient is None:
-                prior_gradient = self.compute_prior_gradient()
-            modality_gradient += prior_gradient / self.num_subsets
-
-        self.FOV_filter(modality_gradient)
-
-        return modality_gradient
 
     def _compute_general_subset_gradient(self, subset_num, prior_gradient):
         """Compute general gradient across all subsets."""

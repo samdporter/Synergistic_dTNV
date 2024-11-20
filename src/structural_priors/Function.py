@@ -343,32 +343,59 @@ class SIRFBlockFunction(Function):
     
     def __init__(self, functions):
         self.functions = functions
+        self.num_subsets = self.get_num_subsets()
         
     def __call__(self, x):
         return sum(f(el) for f, el in zip(self.functions, x.containers))
     
+    def get_modality_indices(self, subset_num):
+        # Get the subset information from obj_fun
+
+        # num_subsets is a list/tuple with subset counts in modality order [modality0, modality1, ...]
+        total_subsets = 0
+        for modality, s in enumerate(self.num_subsets):
+            if subset_num < total_subsets + s:
+                subset_within_modality = subset_num - total_subsets
+                break
+            total_subsets += s
+        else:
+            raise ValueError("Subset number exceeds the total number of subsets across modalities.")
+
+        # Print and return the modality and subset within that modality for debugging
+        print(f"Modality {modality}, Subset {subset_within_modality}")
+        return modality, subset_within_modality
+    
     def get_num_subsets(self):
-        return [f.get_num_subsets() for f in self.functions]
+        return  [f.get_num_subsets() for f in self.functions]
+        
+    def gradient(self, x):
+        return self.get_gradient(x)
     
     def get_gradient(self, x):
         return BlockDataContainer(*[f.get_gradient(el) for f, el in zip(self.functions, x.containers)])
 
-    def get_single_subset_gradient(self, x, subset, modality):
+    def get_single_subset_gradient(self, x, subset):
+
+        modality, subset = self.get_modality_indices(subset)
+
         return BlockDataContainer(*[f.get_subset_gradient(el, subset) if i == modality else \
             el.clone().fill(0) for i, f, el in zip(range(len(self.functions)), self.functions, x.containers)])
 
     def get_subset_gradient(self, x, subset=0):
+        if isinstance(self.get_num_subsets(), int):
+            return BlockDataContainer(*[f.get_subset_gradient(el, subset) for f, el in zip(self.functions, x.containers)])   
+        else:
+            return self.get_single_subset_gradient(x, subset)
         
-        return BlockDataContainer(*[f.get_subset_gradient(el, subset) for f, el in zip(self.functions, x.containers)])   
-    
-    def get_single_subset_sensitivity(self, x, subset_num, modality=0):
-        return BlockDataContainer(*[f.get_subset_sensitivity(subset_num) if i == modality else \
-            el.clone().fill(0) for i, f, el in zip(range(len(self.functions)), self.functions, x.containers)])
+    def get_single_subset_sensitivity(self, subset):
+
+        modality, subset = self.get_modality_indices(subset)
+
+        return BlockDataContainer(*[f.get_subset_sensitivity(subset) if i == modality else \
+            f.get_subset_sensitivity(0).get_uniform_copy(0) for i, f, in zip(range(len(self.functions)), self.functions)])
    
     def get_subset_sensitivity(self, subset_num):
-
-        return BlockDataContainer(*[f.get_subset_sensitivity(subset_num) for f in self.functions])
-    
-    def multiply_with_Hessian(self, image1, image2):
-        
-        return BlockDataContainer(*[f.multiply_with_Hessian(el1, el2) for f, el1, el2 in zip(self.functions, image1.containers, image2.containers)])
+        if isinstance(self.get_num_subsets(), int):
+            return BlockDataContainer(*[f.get_subset_sensitivity(subset_num) for f in self.functions])
+        else:
+            return self.get_single_subset_sensitivity(subset_num)
