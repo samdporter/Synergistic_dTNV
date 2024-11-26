@@ -1,9 +1,10 @@
+from cil.optimisation.functions import Function
+
 import torch
 from torch import vmap
 import numpy as np
 from numbers import Number
 
-from .Function import Function
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -92,6 +93,12 @@ def cardano_cubic_roots_torch(a, b, c, d):
 
 def eigenvalues_3x3_torch(H):
     assert H.shape == (3, 3)
+
+    eigvals =  torch.linalg.eigvalsh(H)
+    # these should be +ve but sometimes they are not because of numerical errors
+    eigvals = torch.where(eigvals < 0, torch.zeros_like(eigvals), eigvals)
+    return eigvals
+
     a = torch.tensor(1.0, dtype=H.dtype, device=H.device)
     b = -torch.trace(H)
     c = 0.5 * (torch.trace(H)**2 - torch.trace(H @ H))
@@ -110,6 +117,11 @@ def compute_special_eigenvector(mu):
     return v_i
 
 def eigenvectors_3x3_torch(A, eigenvalues):
+
+    eigenvectors = torch.linalg.eigh(A)[1]
+    return eigenvectors
+
+
     I = torch.eye(3, dtype=A.dtype, device=A.device)
     eigenvectors = []
     default_eigenvectors = torch.eye(3, dtype=A.dtype, device=A.device)
@@ -253,7 +265,6 @@ def norm_func_torch_xtx(X, func, tau):
         S_square = eigenvalues_2x2_torch(H)
         V = eigenvectors_2x2_torch(H, S_square)
     elif H.shape == (3,3):
-        raise ValueError("3x3 matrix not working as intended")
         S_square = eigenvalues_3x3_torch(H)
         V = eigenvectors_3x3_torch(H, S_square)
     else:
@@ -330,7 +341,6 @@ class GPUVectorialTotalVariation(Function):
         return vectorised_norm(x, norm_func, smoothing_func, order, self.eps)
 
     def __call__(self, x):
-        
         if isinstance(x, np.ndarray):
             x = torch.tensor(x, device=device)
         else:
@@ -339,7 +349,6 @@ class GPUVectorialTotalVariation(Function):
         return torch.sum(self.direct(x)).cpu().numpy()
 
     def proximal(self, x, tau):
-
         if isinstance(x, np.ndarray):
             x = torch.tensor(x, device=device)
         else:
@@ -358,7 +367,6 @@ class GPUVectorialTotalVariation(Function):
         return vectorised_norm_func(x, norm_func, tau, order)
     
     def gradient(self, x):
-
         if isinstance(x, np.ndarray):
             x = torch.tensor(x, device=device)
         else:
@@ -379,7 +387,6 @@ class GPUVectorialTotalVariation(Function):
         return vectorised_norm_func(x, smoothing_func, self.eps, order)
 
     def hessian_diag(self, x):
-
         if isinstance(x, np.ndarray):
             x = torch.tensor(x)
             
@@ -400,7 +407,6 @@ class GPUVectorialTotalVariation(Function):
         return vectorised_norm_func(x, smoothing_func, self.eps, order)
     
     def inv_hessian_diag(self, x):
-
         if isinstance(x, np.ndarray):
             x = torch.tensor(x)
             

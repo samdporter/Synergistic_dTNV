@@ -1,8 +1,8 @@
+from cil.optimisation.functions import Function
+
 import torch
 from torch import vmap
 import numpy as np
-
-from .Function import Function
 
 def pseudo_inverse_torch(H):
     """Inverse except when element is zero."""
@@ -94,8 +94,7 @@ class GPUVectorialTotalVariation(Function):
     """ 
     GPU implementation of the vectorial total variation function.
     """
-    def __init__(self, eps=0, norm = 'nuclear', smoothing_function=None, weights=None,
-                 numpy_out=True):        
+    def __init__(self, eps=0, norm = 'nuclear', smoothing_function=None):        
 
         """Initializes the GPUVectorialTotalVariation class.
         """        
@@ -103,8 +102,7 @@ class GPUVectorialTotalVariation(Function):
         self.eps = eps
         self.norm = norm
         self.smoothing_function = smoothing_function
-        self.numpy_out = numpy_out
-
+        
     def direct(self, x):
 
         if isinstance(x, np.ndarray):
@@ -131,6 +129,14 @@ class GPUVectorialTotalVariation(Function):
     def __call__(self, x):
 
         return torch.sum(self.direct(x)).cpu().numpy()
+
+    def call_no_sum(self, x):
+                
+        return self.direct(x)
+
+    def call_no_sum(self, x):
+            
+        return self.direct(x)
 
     def proximal(self, x, tau):
 

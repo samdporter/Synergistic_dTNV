@@ -285,8 +285,6 @@ def main(args):
     for i, el in enumerate(hessian_diag.containers):
         el.write(f"hessian_diag_{i}.hv")
 
-    quit()
-
     pet2spect_zero = ZeroOperator(pet_data["initial_image"], spect_data["acquisition_data"])
     spect2pet_zero = ZeroOperator(spect_data["initial_image"], pet_data["acquisition_data"])
 

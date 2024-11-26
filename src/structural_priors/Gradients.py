@@ -87,36 +87,6 @@ class CompositionOperator(Operator):
         for op in self.ops[::-1]:
             res = op.adjoint(res)
         return res
-    
-class BlockOperator(Operator):
-
-    def __init__(self, operators, weights=None):
-        self.operators = operators
-        self.weights = weights
-
-    def direct(self, x):
-        res = []
-        if isinstance(x, np.ndarray):
-            x = np.moveaxis(x, -1, 0)
-            for op, arr in zip(self.operators,x):
-                res.append(op.direct(arr))
-            return np.moveaxis(np.array(res), 0, -1)
-        elif isinstance(x, BlockDataContainer):
-            for op, arr in zip(self.operators,x.containers):
-                res.append(op.direct(arr))
-            return BlockDataContainer(res)
-    
-    def adjoint(self, x):
-        res = []
-        if isinstance(x, np.ndarray):
-            x = np.moveaxis(x, -1, 0)
-            for op, arr in zip(self.operators,x):
-                res.append(op.adjoint(arr))
-            return np.moveaxis(np.array(res), 0, -1) 
-        elif isinstance(x, BlockDataContainer):
-            for op, arr in zip(self.operators,x.containers):
-                res.append(op.adjoint(arr))
-            return BlockDataContainer(res) 
 
 class Jacobian(Operator):
     """ Jacobian operation with optional weighting """
@@ -128,25 +98,16 @@ class Jacobian(Operator):
         
         self.voxel_sizes = voxel_sizes
         self.weights = weights
-        self.kappas = self._compute_kappas(weights, kappas)
+
+        if self.gpu and weights is not None:
+                self.weights = [torch.tensor(k, device=device) for k in weights]
         
         self.numpy_out = numpy_out
         self.anatomical = anatomical
 
-        self.grad = self._initialize_gradient(anatomical, voxel_sizes, method, bnd_cond, gpu)
+        self.grad = self._initialise_gradient(anatomical, voxel_sizes, method, bnd_cond, gpu)
 
-    def _compute_kappas(self, weights, kappas):
-
-        if weights is not None and kappas is not None:
-            kappas = [w * k for w, k in zip(weights, kappas)]
-            if self.gpu:
-                if isinstance(kappas[0], np.ndarray):
-                    kappas = [torch.tensor(k, device=device) for k in kappas]
-                else:
-                    kappas = [k.to(device) for k in kappas]
-        return kappas
-
-    def _initialize_gradient(self, anatomical, voxel_sizes, method, bnd_cond, gpu):
+    def _initialise_gradient(self, anatomical, voxel_sizes, method, bnd_cond, gpu):
 
         if anatomical is None:
             return Gradient(voxel_sizes=voxel_sizes, method=method, bnd_cond=bnd_cond, gpu=gpu, numpy_out=False)
@@ -158,24 +119,24 @@ class Jacobian(Operator):
     
     def direct(self, images):
 
-        # expand kappas dims
-        if self.kappas is not None:
+        # expand weights dims
+        if self.weights is not None:
             if self.gpu:
-                kappas = [torch.unsqueeze(k, -1) for k in self.kappas]
+                weights = [torch.unsqueeze(k, -1) for k in self.weights]
             else:
-                kappas = [np.expand_dims(k, -1) for k in self.kappas]
+                weights = [np.expand_dims(k, -1) for k in self.weights]
+        else:
+            weights = None
 
         num_images = images.shape[-1]
         # if weights is a list of arrays, we need to expand dims
-        if self.kappas is not None:
-            jac_list = [kappas[idx] * self.grad.direct(images[..., idx]) for idx in range(num_images)]
-        elif self.weights is not None:
-            jac_list = [self.weights[idx] * self.grad.direct(images[..., idx]) for idx in range(num_images)]
+        if weights is not None:
+            jac_list = [weights[idx] * self.grad.direct(images[..., idx]) for idx in range(num_images)]
         else:
             jac_list = [self.grad.direct(images[..., idx]) for idx in range(num_images)]
 
         if self.gpu:
-            return torch.stack(jac_list, dim=-2)
+            return torch.stack(jac_list, dim=-2).cpu().numpy() if self.numpy_out else torch.stack(jac_list, dim=-2)
         else:
             return np.stack(jac_list, axis=-2)
         
@@ -183,24 +144,20 @@ class Jacobian(Operator):
         num_images = jacobians.shape[-2]
         adjoint_list = []
         for idx in range(num_images):
-            if self.kappas is not None:
-                adjoint_list.append(self.kappas[idx] * self.grad.adjoint(jacobians[..., idx,:]))
-            elif self.weights is not None:
+            if self.weights is not None:
                 adjoint_list.append(self.weights[idx] * self.grad.adjoint(jacobians[..., idx,:]))
             else:
                 adjoint_list.append(self.grad.adjoint(jacobians[..., idx,:]))
                     
         if self.gpu:
-            res = torch.stack(adjoint_list, dim=-1)
-            if self.numpy_out:
-                return res.cpu().numpy() if self.numpy_out else res
+            return torch.stack(adjoint_list, dim=-1).cpu().numpy() if self.numpy_out else torch.stack(adjoint_list, dim=-1)
         else:
             res =  np.stack(adjoint_list, axis=-1)
         return res
 
 class Gradient(Operator):
     def __init__(self, voxel_sizes, method='forward', bnd_cond='Neumann', 
-                 numpy_out=True, gpu=False):
+                 numpy_out=False, gpu=False):
         self.voxel_sizes = voxel_sizes
         self.method = method
         self.bnd_cond = bnd_cond
@@ -229,7 +186,7 @@ class Gradient(Operator):
                 if self.voxel_sizes[i] != 1.0:
                     res[-1] /= self.voxel_sizes[i]
             result = torch.stack(res, dim=-1)
-            return result.numpy() if self.numpy_out else result
+            return result.cpu().numpy() if self.numpy_out else result
         else:
             for i in range(x.ndim):
                 self.FD.direction = i
@@ -256,7 +213,7 @@ class Gradient(Operator):
                 if self.voxel_sizes[i] != 1.0:
                     res[-1] /= self.voxel_sizes[i]
             result = torch.stack(res, dim=-1).sum(dim=-1)
-            return result.numpy() if self.numpy_out else result
+            return result.cpu().numpy() if self.numpy_out else result
         for i in range(x.shape[-1]):
             self.FD.direction = i
             self.FD.voxel_size = self.voxel_sizes[i]
@@ -275,14 +232,16 @@ class Gradient(Operator):
         append_tensor = flipped_x.select(direction, 0 if self.bnd_cond == 'Periodic' else -1).unsqueeze(direction)
         out = -torch.diff(flipped_x, n=1, dim=direction, append=append_tensor).flip(direction)
         if self.bnd_cond == 'Neumann':
-            out.select(direction, 0).zero_()
+            # Left boundary: Set first slice of out to the first slice of x
+            out.select(direction, 0).copy_(x.select(direction, 0))
+            # Right boundary: Set last slice of out to the negative of the penultimate slice of x
+            out.select(direction, -1).copy_(-x.select(direction, -2))
         return out
-
     
 class DirectionalGradient(Operator):
 
     def __init__(self, anatomical, voxel_sizes, gamma=1, eta=1e-6,
-                  method='forward', bnd_cond='Neumann', numpy_out=True,
+                  method='forward', bnd_cond='Neumann', numpy_out=False,
                   gpu=False) -> None:
 
         self.anatomical = anatomical
@@ -293,14 +252,15 @@ class DirectionalGradient(Operator):
         self.bnd_cond = bnd_cond
         self.numpy_out = numpy_out
         self.gpu = gpu
-        self.gradient = Gradient(voxel_sizes=self.voxel_size, method=self.method, bnd_cond=self.bnd_cond, numpy_out=numpy_out, gpu=self.gpu)
+        self.gradient = Gradient(voxel_sizes=self.voxel_size, method=self.method, bnd_cond=self.bnd_cond, numpy_out=False, gpu=self.gpu)
 
         self.anatomical_grad = self.gradient.direct(self.anatomical)
 
         if gpu:
             self.directional_op = gpu_directional_op   
-            self.gradient.numpy_out = False    
-            if isinstance(self.anatomical_grad, np.ndarray):
+            self.eta = torch.tensor(self.eta, device=device)
+            self.gamma = torch.tensor(self.gamma, device=device)
+            if not isinstance(self.anatomical_grad, torch.Tensor):
                 self.anatomical_grad = torch.tensor(self.anatomical_grad, device=device)
             else:
                 self.anatomical_grad.to(device)  
@@ -308,22 +268,23 @@ class DirectionalGradient(Operator):
             self.directional_op = directional_op
 
     def direct(self, x):
-        if self.gpu and isinstance(x, np.ndarray):
+        if self.gpu and not isinstance(x, torch.Tensor):
             x = torch.tensor(x, device=device)
         gradient = self.gradient.direct(x)
         res =  self.directional_op(gradient, self.anatomical_grad, self.gamma, self.eta)
         if self.gpu:
-            return res.numpy() if self.numpy_out else res
+            return res.cpu().numpy() if self.numpy_out else res
         else:
             return res
         
     def adjoint(self, x):
-        if self.gpu and isinstance(x, np.ndarray):
-            x = torch.tensor(x)
+        if self.gpu and not isinstance(x, torch.Tensor):
+            x = torch.tensor(x, device=device)
+
         x = self.directional_op(x, self.anatomical_grad, self.gamma, self.eta)
         res = self.gradient.adjoint(x)
         if self.gpu:
-            return res.numpy() if self.numpy_out else res
+            return res.cpu().numpy() if self.numpy_out else res
         else:
             return res
 
@@ -333,13 +294,13 @@ class CPUFiniteDifferenceOperator(Operator):
     Numpy implementation of finite difference operator
     """
     
-    def __init__(self, voxel_sizes, direction=None, method='forward', bnd_cond='Neumann'):
-        self.voxel_sizes= voxel_sizes
+    def __init__(self, voxel_size, direction=None, method='forward', bnd_cond='Neumann'):
+        self.voxel_size= voxel_size
         self.direction = direction
         self.method = method
         self.bnd_cond = bnd_cond
         
-        if self.voxel_sizes<= 0:
+        if self.voxel_size<= 0:
             raise ValueError('Need a positive voxel size')
 
     def get_slice(self, x, start, stop, end=None):
@@ -469,8 +430,8 @@ class CPUFiniteDifferenceOperator(Operator):
         else:
                 raise ValueError('Not implemented')                
         
-        if self.voxel_sizes!= 1.0:
-            outa /= self.voxel_sizes 
+        if self.voxel_size!= 1.0:
+            outa /= self.voxel_size
 
         return outa               
                  
@@ -602,8 +563,8 @@ class CPUFiniteDifferenceOperator(Operator):
                 raise ValueError('Not implemented')                  
                                
         #outa *= -1.
-        if self.voxel_sizes!= 1.0:
-            outa /= self.voxel_sizes                     
+        if self.voxel_size!= 1.0:
+            outa /= self.voxel_size                     
             
         return outa
     
@@ -700,80 +661,3 @@ def fast_norm_parallel_4d(arr):
                     total += arr[i, j, k, l]**2
 
     return np.sqrt(total)
-
-class BlockDataContainer():
-    
-    def __init__(self, datacontainers: list):
-        
-        self.containers = np.array(datacontainers)
-
-    def __getitem__(self, key):
-        return self.containers[key]
-    
-    def __setitem__(self, key, value):
-        self.containers[key] = value
-
-    def __len__(self):
-        return len(self.containers)
-
-    # function overloadings
-    def __multiply__(self, x):
-        if isinstance(x, BlockDataContainer):
-            return BlockDataContainer([x*y for x,y in zip(self.containers, x.containers)])
-        else:
-            return BlockDataContainer([x*y for y in self.containers])
-        
-    def __rmultiply__(self, x):
-        return self.__multiply__(x)
-    
-    def __mul__(self, x):
-        return self.__multiply__(x)
-    
-    def __rmul__(self, x):
-        return self.__multiply__(x)
-    
-    def __add__(self, x):
-        if isinstance(x, BlockDataContainer):
-            return BlockDataContainer([x+y for x,y in zip(self.containers, x.containers)])
-        else:
-            return BlockDataContainer([x+y for y in self.containers])
-        
-    def __radd__(self, x):
-        return self.__add__(x)
-    
-    def __sub__(self, x):
-        if isinstance(x, BlockDataContainer):
-            return BlockDataContainer([x-y for x,y in zip(self.containers, x.containers)])
-        else:
-            return BlockDataContainer([x-y for y in self.containers])
-        
-    def __rsub__(self, x):
-        return self.__sub__(x)
-    
-    def __truediv__(self, x):
-        if isinstance(x, BlockDataContainer):
-            return BlockDataContainer([x/y for x,y in zip(self.containers, x.containers)])
-        else:
-            return BlockDataContainer([x/y for y in self.containers])
-        
-    def __rtruediv__(self, x):
-        return self.__truediv__(x)
-    
-    def clone(self):
-        return BlockDataContainer([x.copy() for x in self.containers])
-    
-    def copy(self):
-        return self.clone()
-    
-    def allocate(self, value=0):
-        for container in self.containers:
-            container.fill(value)
-
-    def get_uniform_copy(self, value=0):
-        res = self.clone()
-        res.allocate(value)
-        return res
-    
-    @property
-    def shape(self):
-        return self.containers.shape
