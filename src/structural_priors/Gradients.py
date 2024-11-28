@@ -127,6 +127,10 @@ class Jacobian(Operator):
                 weights = [np.expand_dims(k, -1) for k in self.weights]
         else:
             weights = None
+            
+        # if gpu is enabled, convert images to torch tensor
+        if self.gpu:
+            images = torch.tensor(images, device=device) if not isinstance(images, torch.Tensor) else images.to(device)
 
         num_images = images.shape[-1]
         # if weights is a list of arrays, we need to expand dims
@@ -141,6 +145,13 @@ class Jacobian(Operator):
             return np.stack(jac_list, axis=-2)
         
     def adjoint(self, jacobians):
+        
+        if self.gpu:
+            if not isinstance(jacobians, torch.Tensor):
+                jacobians = torch.tensor(jacobians, device=device)
+            else:
+                jacobians = jacobians.to(device)
+                
         num_images = jacobians.shape[-2]
         adjoint_list = []
         for idx in range(num_images):
@@ -170,7 +181,7 @@ class Gradient(Operator):
     def direct(self, x):
         res = []
         if self.gpu:
-            if isinstance(x, np.ndarray):
+            if not isinstance(x, torch.Tensor):
                 x = torch.tensor(x, device=device)
             else:
                 x = x.to(device)
@@ -197,7 +208,7 @@ class Gradient(Operator):
     def adjoint(self, x):
         res = []
         if self.gpu:
-            if isinstance(x, np.ndarray):
+            if not isinstance(x, torch.Tensor):
                 x = torch.tensor(x, device=device)
             else:
                 x = x.to(device)
@@ -268,8 +279,11 @@ class DirectionalGradient(Operator):
             self.directional_op = directional_op
 
     def direct(self, x):
-        if self.gpu and not isinstance(x, torch.Tensor):
-            x = torch.tensor(x, device=device)
+        if self.gpu:
+            if not isinstance(x, torch.Tensor):
+                x = torch.tensor(x, device=device)
+            else:
+                x = x.to(device)
         gradient = self.gradient.direct(x)
         res =  self.directional_op(gradient, self.anatomical_grad, self.gamma, self.eta)
         if self.gpu:
@@ -278,9 +292,11 @@ class DirectionalGradient(Operator):
             return res
         
     def adjoint(self, x):
-        if self.gpu and not isinstance(x, torch.Tensor):
-            x = torch.tensor(x, device=device)
-
+        if self.gpu:
+            if not isinstance(x, torch.Tensor):
+                x = torch.tensor(x, device=device)
+            else:
+                x = x.to(device)
         x = self.directional_op(x, self.anatomical_grad, self.gamma, self.eta)
         res = self.gradient.adjoint(x)
         if self.gpu:
@@ -596,7 +612,7 @@ def gpu_directional_op(image_gradient, anatomical_gradient, gamma=1, eta=1e-6):
     """
 
     xi = anatomical_gradient / (torch.norm(anatomical_gradient, p=2, dim=-1, keepdim=True) + eta**2)
-
+    
     out = image_gradient - gamma * torch.sum(image_gradient * xi, dim=-1, keepdim=True) * xi
     return out
 

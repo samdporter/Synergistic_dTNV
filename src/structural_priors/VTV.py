@@ -1,7 +1,10 @@
 from cil.optimisation.functions import Function
-import array_api_compat.numpy as np
-import array_api_compat.torch as torch
-import torch
+try:
+    import torch
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+except ImportError:
+    device = 'cpu'
+import numpy as np
 
 from sirf.STIR import ImageData
 
@@ -9,41 +12,49 @@ from sirf.STIR import ImageData
 from .schatten_norm_cpu import CPUVectorialTotalVariation
 from.Gradients import Jacobian
 
-class BlockDataContainerToArray():
-
+class BlockDataContainerToArray:
     def __init__(self, domain_geometry, gpu=True):
-
         self.domain_geometry = domain_geometry
         self.gpu = gpu
-
         if self.gpu:
-            # use torch as xp
-            self.xp = torch
+            import torch
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
-            self.xp = np
+            self.device = None
 
     def direct(self, x, out=None):
-
+        # Ensure input has the correct attribute
         if not hasattr(x, "containers"):
             raise ValueError("Input x must be a block data container with a 'containers' attribute.")
-        ret = self.xp.stack([self.xp.asarray(d.as_array()) for d in x.containers], axis=-1)
+        
+        # Convert containers to a single stacked array (GPU or CPU)
+        arrays = (d.as_array() for d in x.containers)  # Generator to reduce memory overhead
+        if self.gpu:
+            ret = torch.stack([torch.tensor(arr, device=self.device) for arr in arrays], dim=-1)
+        else:
+            ret = np.stack(list(arrays), axis=-1)  # Convert generator to list for numpy stack
+
+        # Write to output if provided
         if out is not None:
             out.fill(ret)
         return ret
 
     def adjoint(self, x, out=None):
-
+        # Convert input to a NumPy array if needed
         if self.gpu and isinstance(x, torch.Tensor):
             x_arr = x.cpu().numpy()
         else:
             x_arr = np.asarray(x)
+
+        # Fill the domain geometry with the corresponding slices
         res = self.domain_geometry.clone()
         for i, r in enumerate(res.containers):
             r.fill(x_arr[..., i])
+
+        # Write to output if provided
         if out is not None:
             out.fill(res)
         return res
-
 
 class WeightedVectorialTotalVariation(Function):
     """
