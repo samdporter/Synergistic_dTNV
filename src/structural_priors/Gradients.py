@@ -277,6 +277,10 @@ class DirectionalGradient(Operator):
                 self.anatomical_grad.to(device)  
         else:
             self.directional_op = directional_op
+            # astype float64 for numba
+            self.eta = np.float32(self.eta)
+            self.gamma = np.float32(self.gamma)
+            self.anatomical_grad = self.anatomical_grad.astype(np.float32)
 
     def direct(self, x):
         if self.gpu:
@@ -297,6 +301,8 @@ class DirectionalGradient(Operator):
                 x = torch.tensor(x, device=device)
             else:
                 x = x.to(device)
+        else:
+            x = x.astype(np.float32)
         x = self.directional_op(x, self.anatomical_grad, self.gamma, self.eta)
         res = self.gradient.adjoint(x)
         if self.gpu:
@@ -449,7 +455,7 @@ class CPUFiniteDifferenceOperator(Operator):
         if self.voxel_size!= 1.0:
             outa /= self.voxel_size
 
-        return outa               
+        return outa            
                  
         
     def adjoint(self, x, out=None):
@@ -591,8 +597,6 @@ def directional_op(image_gradient, anatomical_gradient, gamma=1, eta=1e-6):
     image_gradient: 3D array of image gradients
     anatomical_gradient: 3D array of anatomical gradients
     """
-    image_gradient = image_gradient.astype(np.float64)
-    anatomical_gradient = anatomical_gradient.astype(np.float64)
     out = np.empty_like(image_gradient)
     
     D, H, W, i = anatomical_gradient.shape

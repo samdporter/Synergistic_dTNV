@@ -1,6 +1,7 @@
 from cil.optimisation.utilities import callbacks
 from cil.framework import BlockDataContainer
 from sirf.STIR import ImageData
+import pandas as pd
 
 class Callback(callbacks.Callback):
     """
@@ -26,10 +27,10 @@ class SaveImageCallback(Callback):
     def __call__(self, algo):
         if self.skip_iteration(algo):
             return
-        if isinstance(algo.x, ImageData):
-            algo.x.write(f"{self.filename}_{algo.iteration}.hv")
-        elif isinstance(algo.x, BlockDataContainer):
-            for i, el in enumerate(algo.x.containers):
+        if isinstance(algo.solution, ImageData):
+            algo.solution.write(f"{self.filename}_{algo.iteration}.hv")
+        elif isinstance(algo.solution, BlockDataContainer):
+            for i, el in enumerate(algo.solution.containers):
                 el.write(f"{self.filename}_{i}_{algo.iteration}.hv")
                 
 class SaveGradientUpdateCallback(Callback):
@@ -60,3 +61,55 @@ class PrintObjectiveCallback(Callback):
         if self.skip_iteration(algo):
             return
         print(f"Iteration {algo.iteration}, Objective {algo.objective[-1]}")
+        
+class SaveObjectiveCallback(Callback):
+    """
+    CIL Callback that saves the objective function value to disk.
+    """
+    def __init__(self, filename, interval, **kwargs):
+        super().__init__(interval, **kwargs)
+        self.filename = filename
+
+    def __call__(self, algo):
+        if self.skip_iteration(algo):
+            return
+        pd.DataFrame(algo.objective).to_csv(f"{self.filename}.csv")
+        
+class SavePreconditionerCallback(Callback):
+    """
+    CIL Callback that saves the preconditioner to disk.
+    """
+    def __init__(self, filename, interval, **kwargs):
+        super().__init__(interval, **kwargs)
+        self.filename = filename
+        
+    def __call__(self, algo):
+        preconditioner = algo.preconditioner.compute_preconditioner(algo)
+        if self.skip_iteration(algo):
+            return
+        if isinstance(preconditioner, ImageData):
+            preconditioner.write(f"{self.filename}_{algo.iteration}.hv")
+        elif isinstance(preconditioner, BlockDataContainer):
+            for i, el in enumerate(preconditioner.containers):
+                el.write(f"{self.filename}_{i}_{algo.iteration}.hv")
+                
+class SubsetValueCallback(Callback):
+    """
+    CIL Callback that saves the stochastic gradient value to disk.
+    """
+    def __init__(self, filename, interval, **kwargs):
+        super().__init__(interval, **kwargs)
+        self.filename = filename
+        # create panda dataframe and save all subset fucntion values in it
+        self.subset_values = pd.DataFrame()
+        
+    def __call__(self, algo):
+        if self.skip_iteration(algo):
+            return
+        for i, function in enumerate(algo.f.functions):
+            # needs to add to new line for iteration algo.iteration
+            self.subset_values.at[algo.iteration, f"Subset {i}"] = function(algo.solution)
+        # add a sum at first column
+        self.subset_values.at[algo.iteration, "Sum"] = sum([function(algo.solution) for function in algo.f.functions])
+        self.subset_values.to_csv(f"{self.filename}.csv")
+        

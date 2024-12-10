@@ -23,19 +23,20 @@ AcquisitionData.set_storage_scheme('memory')
 from cil.framework import BlockDataContainer
 from cil.optimisation.operators import (BlockOperator, ZeroOperator, 
                                         IdentityOperator, LinearOperator,
-                                        CompositionOperator)
+                                        CompositionOperator, GradientOperator)
 from cil.optimisation.functions import (SVRGFunction, SAGAFunction, BlockFunction,
                                         OperatorCompositionFunction, ZeroFunction, 
-                                        SGFunction, KullbackLeibler, SumFunction)
+                                        SGFunction, KullbackLeibler, SumFunction,
+                                        SmoothMixedL21Norm)
 from cil.optimisation.algorithms import ISTA
 from cil.optimisation.utilities import Sampler, StepSizeRule
 
 parser = argparse.ArgumentParser(description='BSREM')
 
-parser.add_argument('--alpha', type=float, default=128, help='alpha')
-parser.add_argument('--beta', type=float, default=0.5, help='beta')
+parser.add_argument('--alpha', type=float, default=48, help='alpha')
+parser.add_argument('--beta', type=float, default=0.3, help='beta')
 parser.add_argument('--delta', type=float, default=None, help='delta')
-parser.add_argument('--num_subsets', type=str, default="18,12", help='number of subsets')
+parser.add_argument('--num_subsets', type=str, default="9,12", help='number of subsets')
 parser.add_argument('--num_prior_calls', type=float, default=6, help='prior probability')
 parser.add_argument('--use_kappa', action='store_true', help='use kappa')
 parser.add_argument('--initial_step_size', type=float, default=1, help='initial step size')
@@ -77,7 +78,7 @@ from utilities.sirf import (get_block_objective, set_up_partitioned_objectives,
                             compute_inv_hessian_diagonals, get_s_inv_from_am,
                             get_subset_data, get_filters)
 from utilities.cil import (BlockIndicatorBox, LinearDecayStepSizeRule, 
-                           ZeroEndSlices, ArmijoStepSearchRule, NaNToZeroOperator)
+                           ZeroEndSlices)
 
 BlockDataContainer.get_uniform_copy = lambda self, n: BlockDataContainer(*[x.clone().fill(n) for x in self.containers])
 BlockDataContainer.max = lambda self: max(d.max() for d in self.containers)
@@ -85,36 +86,12 @@ BlockDataContainer.max = lambda self: max(d.max() for d in self.containers)
 
 # Change to working directory - this is where the tmp_ files will be saved
 os.chdir(args.working_path)
-
-def update(self):
-    r"""Performs a single iteration of ISTA
-
-    .. math:: x_{k+1} = \mathrm{prox}_{\alpha g}(x_{k} - \alpha\nabla f(x_{k}))
-
-    Updated so that the gradient update and preconditioned update can be separated
-
-    """
-    print("doing new update")
-    # gradient step
-    self.f.gradient(self.x_old, out=self.gradient_update)
-
-    ### step size choice before the preconditioner
-    try:
-        step_size = self.step_size_rule.get_step_size(self)
-    except NameError:
-        raise NameError(msg='`step_size` must be `None`, a real float or a child class of :meth:`cil.optimisation.utilities.StepSizeRule`')
-
-    # preconditioner step - separating preconditioner from gradient update
-    if self.preconditioner is not None:
-        self.x_old.sapyb(1., self.preconditioner.apply(self, self.gradient_update), -step_size, out=self.x_old)
-    else:
-        self.x_old.sapyb(1., self.gradient_update, -step_size, out=self.x_old)
-
-    # proximal step
-    self.g.proximal(self.x_old, step_size, out=self.x)
-
-ISTA.update = update
     
+class ArmijoInitialStepSize():
+    
+    def __init__(self) -> None:
+        pass
+       
 def main(args):
     """
     Main function to perform image reconstruction using BSREM and PSMR algorithms.
@@ -148,11 +125,11 @@ def main(args):
     
     # set up resampling operators
     pet_data["initial_image"].write("initial_image_0.hv")
-    pet2ct = CompositionOperator(NiftyResampleOperator(ct, pet_data["initial_image"], AffineTransformation(os.path.join(args.data_path, "Registration", "pet_to_ct_smallFOV.txt"))), NaNToZeroOperator(pet_data["initial_image"]))
+    pet2ct = NiftyResampleOperator(ct, pet_data["initial_image"], AffineTransformation(os.path.join(args.data_path, "Registration", "pet_to_ct_smallFOV.txt")))
     zero_pet2ct = ZeroOperator(pet_data["initial_image"], ct)
     
     spect_data["initial_image"].write("initial_image_1.hv")
-    spect2ct = CompositionOperator(NiftyResampleOperator(ct, spect_data["initial_image"], AffineTransformation(os.path.join(args.data_path, "Registration", "spect_to_ct_smallFOV.txt"))), NaNToZeroOperator(spect_data["initial_image"]))
+    spect2ct = CompositionOperator(NiftyResampleOperator(ct, spect_data["initial_image"], AffineTransformation(os.path.join(args.data_path, "Registration", "spect_to_ct_smallFOV.txt"))), ZeroEndSlices(6, spect_data['initial_image']))
     zero_spect2ct = ZeroOperator(spect_data["initial_image"], ct)
 
     # set up prior
@@ -160,9 +137,9 @@ def main(args):
                         zero_pet2ct, spect2ct, 
                         shape = (2,2))
     
-    vtv = WeightedVectorialTotalVariation(bo.direct(initial_estimates), [args.alpha, args.beta], args.delta, 
-                                          anatomical=ct, gpu=not args.no_gpu, stable=False)
-    prior = OperatorCompositionFunction(vtv, bo)
+    sml21n = SmoothMixedL21Norm(epsilon=args.delta)
+    grad = GradientOperator(ct)
+    prior = OperatorCompositionFunction(BlockFunction(sml21n, sml21n), CompositionOperator(BlockOperator(grad,grad), bo))
 
     # set up data fidelity functions
     
@@ -176,7 +153,6 @@ def main(args):
                                         spect_data['acquisition_data'].get_uniform_copy(1), num_batches=num_subsets[1], mode = "staggered",
                                         create_acq_model=lambda: get_spect_am(spect_data, None, gauss_fwhm=(6.1,6.1,6.1),
                                                                               keep_all_views_in_cache=args.keep_all_views_in_cache))
-    
     
     if not args.use_cil_kl:
         del pet_datas, spect_datas, pet_ams, spect_ams
@@ -229,21 +205,10 @@ def main(args):
         all_funs.append(prior)
     
     # set up preconditioners
-    # Define the lambda function
-    #inv_hessian_data_function = lambda solution: compute_inv_hessian_diagonals(solution, [pet_obj_funs, spect_obj_funs])
-    #data_precond = ImageFunctionPreconditioner(inv_hessian_data_function, 1, update_interval=update_interval, freeze_iter=np.inf)
-    #precond = HarmonicMeanPreconditioner([data_precond, prior_precond], update_interval=1, freeze_iter=np.inf)
-    #precond = HarmonicMeanPreconditioner([bsrem_precond, prior_precond], update_interval=1, freeze_iter=len(all_funs)*10)
-    #precond = bsrem_precond
-    #precond = IdentityPreconditioner()
-    #const_precond = ConstantPreconditioner(compute_inv_hessian_diagonals(initial_estimates, [pet_obj_funs, spect_obj_funs]))
-    #precond = HarmonicMeanPreconditioner([const_precond, prior_precond], update_interval, freeze_iter=np.inf)
-    #precond = const_precond
-    #precond = MeanPreconditioner([const_precond, prior_precond], update_interval, freeze_iter=np.inf)
-
     bsrem_precond = BSREMPreconditioner(s_inv, 1, len(all_funs)*5, epsilon = args.delta)
     prior_precond =ImageFunctionPreconditioner(prior.inv_hessian_diag, 1, update_interval, freeze_iter=np.inf)
-    precond = HarmonicMeanPreconditioner([bsrem_precond, prior_precond], update_interval=update_interval, freeze_iter=len(all_funs)*10)
+    const_precond = ConstantPreconditioner(compute_inv_hessian_diagonals(initial_estimates, [pet_obj_funs, spect_obj_funs]))
+    precond = HarmonicMeanPreconditioner([const_precond, prior_precond], update_interval, freeze_iter=np.inf)
 
     if args.num_prior_calls == 0 or args.algorithm == "mlem":
         if not isinstance(precond, IdentityPreconditioner):
@@ -252,7 +217,7 @@ def main(args):
     if args.algorithm == "ordered":
         f = SGFunction(all_funs, sampler=Sampler.sequential(len(all_funs)))
     elif args.algorithm == "mlem" or args.algorithm == "gd":
-        f = SumFunction(*all_funs[-1], *all_funs[:-1]*args.num_prior_calls)
+        f = SumFunction(*all_funs)
     else:
         # probabilities need to reflect the different number of subsets and prior probability 
         # so 1 full update is done every iteration
@@ -274,32 +239,19 @@ def main(args):
             f = SAGAFunction(all_funs, sampler = Sampler.random_with_replacement(len(all_funs),prob=probs))
         else:
             raise ValueError(f"Unknown algorithm {args.algorithm}")
-        
+
+    # And finally set up the algorithm
+    algo = ISTA(initial = initial_estimates, f=f, g = BlockIndicatorBox(lower=0, upper = np.inf), preconditioner=precond,
+                step_size=LinearDecayStepSizeRule(args.initial_step_size, args.relaxation_eta),
+                update_objective_interval = update_interval,)
     
-    if args.use_cil_kl:
-        maximiser = False
-    else:
-        maximiser = True
-    
-    callback_update_interval = 1
+    callback_update_interval = update_interval
     callbacks = [SaveImageCallback("image", callback_update_interval),
                     SaveGradientUpdateCallback("gradient_update", callback_update_interval),
                     PrintObjectiveCallback(update_interval),
                     SaveObjectiveCallback("objectives", update_interval),
                     SavePreconditionerCallback("preconditioner", callback_update_interval),
                     SubsetValueCallback("subsets", update_interval),]
-
-    armijo_search = ArmijoStepSearchRule(args.initial_step_size, 0.5, 100, 0.01, 100, maximiser=maximiser)
-        
-    init_algo = ISTA(initial = initial_estimates, f=SumFunction(*all_funs), g = BlockIndicatorBox(lower=0, upper = np.inf), preconditioner=precond,
-                    step_size=armijo_search, update_objective_interval = 1)
-    
-    init_algo.run(5, verbose=1, callbacks=callbacks)
-
-    # And finally set up the algorithm
-    algo = ISTA(initial = init_algo.solution, f=f, g = BlockIndicatorBox(lower=0, upper = np.inf), preconditioner=precond,
-                step_size=armijo_search.min_step_size,
-                update_objective_interval = update_interval,)
     
     print("running algorithm")
     

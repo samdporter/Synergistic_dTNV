@@ -16,11 +16,6 @@ class BlockDataContainerToArray:
     def __init__(self, domain_geometry, gpu=True):
         self.domain_geometry = domain_geometry
         self.gpu = gpu
-        if self.gpu:
-            import torch
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = None
 
     def direct(self, x, out=None):
         # Ensure input has the correct attribute
@@ -30,7 +25,7 @@ class BlockDataContainerToArray:
         # Convert containers to a single stacked array (GPU or CPU)
         arrays = (d.as_array() for d in x.containers)  # Generator to reduce memory overhead
         if self.gpu:
-            ret = torch.stack([torch.tensor(arr, device=self.device) for arr in arrays], dim=-1)
+            ret = torch.stack([torch.tensor(arr, device=device) for arr in arrays], dim=-1)
         else:
             ret = np.stack(list(arrays), axis=-1)  # Convert generator to list for numpy stack
 
@@ -71,7 +66,7 @@ class WeightedVectorialTotalVariation(Function):
         voxel_sizes = geometry.containers[0].voxel_sizes()
         if isinstance(anatomical, ImageData):
             anatomical = anatomical.as_array()
-        self.jacobian = Jacobian(voxel_sizes, weights, anatomical=anatomical, gpu=gpu)
+        self.jacobian = Jacobian(voxel_sizes, weights, anatomical=anatomical, gpu=gpu, numpy_out=not gpu)
         self.smoothing = smoothing
         if gpu:
             if stable:
@@ -103,13 +98,13 @@ class WeightedVectorialTotalVariation(Function):
         ret = self.bdc2a.adjoint(self.jacobian.adjoint(self.vtv.hessian_diag(self.jacobian.direct(self.bdc2a.direct(x)))))
         if out is not None:
             out.fill(ret)
-        return ret
+        return ret.abs()
     
     def inv_hessian_diag(self, x, out=None):
         ret = self.bdc2a.adjoint(self.jacobian.adjoint(self.vtv.inv_hessian_diag(self.jacobian.direct(self.bdc2a.direct(x)))))
         if out is not None:
             out.fill(ret)
-        return ret
+        return ret.abs()
     
     def proximal(self, x, tau, out=None):
         ret = self.bdc2a.adjoint(self.jacobian.adjoint(self.vtv.proximal(self.jacobian.direct(self.bdc2a.direct(x)), tau)))

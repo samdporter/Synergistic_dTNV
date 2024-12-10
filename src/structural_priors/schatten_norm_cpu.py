@@ -152,19 +152,19 @@ class CPUVectorialTotalVariation(Function):
     
     def call_no_sum(self, x):
         if self.smoothing_function == 'fair':
-            return cpu_nuc_norm_fair_no_sum(x.astype(np.float64), self.eps)
+            return cpu_nuc_norm_fair_no_sum(x, self.eps)
         elif self.smoothing_function == 'charbonnier':
-            return cpu_nuc_norm_charbonnier_no_sum(x.astype(np.float64), self.eps)
+            return cpu_nuc_norm_charbonnier_no_sum(x, self.eps)
         else:
-            return cpu_nuc_norm_no_sum(x.astype(np.float64))
+            return cpu_nuc_norm_no_sum(x)
     
     def get_value(self, x):
         if self.smoothing_function == 'fair':
-            return cpu_nuc_norm_fair(x.astype(np.float64), self.eps)
+            return cpu_nuc_norm_fair(x, self.eps)
         elif self.smoothing_function == 'charbonnier':
-            return cpu_nuc_norm_charbonnier(x.astype(np.float64), self.eps)
+            return cpu_nuc_norm_charbonnier(x, self.eps)
         elif self.smoothing_function == None:
-            return cpu_nuc_norm(x.astype(np.float64))
+            return cpu_nuc_norm(x)
         else:
             return 0
         
@@ -173,18 +173,18 @@ class CPUVectorialTotalVariation(Function):
         if self.smoothing_function == None:
             raise ValueError('Smoothing function not defined')
         if self.smoothing_function == 'fair':
-            return cpu_nuc_norm_gradient_fair(x.astype(np.float64), self.eps)
+            return cpu_nuc_norm_gradient_fair(x, self.eps)
         elif self.smoothing_function == 'charbonnier':
-            return cpu_nuc_norm_gradient_charbonnier(x.astype(np.float64), self.eps)
+            return cpu_nuc_norm_gradient_charbonnier(x, self.eps)
     
     def hessian(self, x):
         
         if self.smoothing_function == None:
             raise ValueError('Smoothing function not defined')
         if self.smoothing_function == 'fair':
-            return cpu_nuc_norm_hessian_fair(x.astype(np.float64), self.eps)
+            return cpu_nuc_norm_hessian_fair(x, self.eps)
         elif self.smoothing_function == 'charbonnier':
-            return cpu_nuc_norm_hessian_fair(x.astype(np.float64), self.eps)
+            return cpu_nuc_norm_hessian_fair(x, self.eps)
 
 
     def proximal(self, x, tau):      
@@ -192,7 +192,7 @@ class CPUVectorialTotalVariation(Function):
         if self.smoothing_function != None:
             raise ValueError('Cannot use proximal operator with smoothing function')
 
-        return cpu_nuc_norm_proximal(x.astype(np.float64), tau)
+        return cpu_nuc_norm_proximal(x, tau)
     
     def convex_conjugate(self, x):
         return 0

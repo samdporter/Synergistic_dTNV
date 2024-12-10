@@ -229,7 +229,6 @@ def norm_torch(M, func, smoothing_func, order, eps):
     if H.shape == (2, 2):
         eigenvalues = eigenvalues_2x2_torch(H)
     elif H.shape == (3, 3):
-        raise ValueError("3x3 matrix not working as intended")
         eigenvalues = eigenvalues_3x3_torch(H)[1:]
 
     singularvalues = torch.sqrt(eigenvalues)
@@ -244,7 +243,6 @@ def norm_func_torch_xxt(X, func, tau):
         S_square = eigenvalues_2x2_torch(H)
         U = eigenvectors_2x2_torch(H, S_square)
     elif H.shape == (3,3):
-        raise ValueError("3x3 matrix not working as intended")
         S_square = eigenvalues_3x3_torch(H)
         U = eigenvectors_3x3_torch(H, S_square)
     else:
@@ -310,9 +308,9 @@ class GPUVectorialTotalVariation(Function):
         """Initializes the GPUVectorialTotalVariation class.
         """    
         if eps is not None:    
-            self.eps = torch.tensor(eps)
+            self.eps = torch.tensor(eps, device=device)
         else:
-            self.eps = torch.tensor(0)
+            self.eps = torch.tensor(0.0, device=device)
         self.norm = norm
         self.smoothing_function = smoothing_function
         self.numpy_out = numpy_out
