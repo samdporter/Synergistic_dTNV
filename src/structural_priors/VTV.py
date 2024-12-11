@@ -76,8 +76,6 @@ class WeightedVectorialTotalVariation(Function):
                 from .schatten_norm_gpu import GPUVectorialTotalVariation
                 self.vtv = GPUVectorialTotalVariation(eps=delta, norm=norm, smoothing_function=smoothing)
         else:
-            if smoothing != 'fair':
-                raise ValueError("Only fair smoothing is supported for CPU")
             self.vtv = CPUVectorialTotalVariation(delta, smoothing_function=smoothing)
 
         self.bdc2a = BlockDataContainerToArray(geometry, gpu=gpu)
