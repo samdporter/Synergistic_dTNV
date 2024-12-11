@@ -60,12 +60,9 @@ def get_s_inv_from_obj(obj_funs, initial_estimates):
         for obj_fun in obj_funs[i]:
             tmp = obj_fun.get_subset_sensitivity(0)
             tmp.maximum(0, out = tmp)
-            tmp_arr = tmp.as_array()
-            tmp_arr = np.reciprocal(tmp_arr, where=tmp_arr!=0)
-            tmp_arr = np.nan_to_num(tmp_arr)
-            tmp.fill(tmp_arr)
             el += tmp
         el_arr = el.as_array()
+        el_arr = np.reciprocal(el_arr, where=el_arr!=0)
         el.fill(np.nan_to_num(el_arr))
     return s_inv
 
@@ -74,13 +71,12 @@ def get_s_inv_from_am(ams, initial_estimates):
     s_inv = initial_estimates.get_uniform_copy(0)
     for i, el in enumerate(s_inv.containers):
         for am in ams[i]:
-            one = initial_estimates.get_uniform_copy(1)
-            tmp = am.backward(am.forward(one))
+            one = am.forward(initial_estimates[i]).get_uniform_copy(1)
+            tmp = am.backward(one)
             tmp.maximum(0, out = tmp)
-            tmp_arr = tmp.as_array()
-            tmp.fill(np.reciprocal(tmp_arr, where=tmp_arr!=0))
             el += tmp
         el_arr = el.as_array()
+        el_arr = np.reciprocal(el_arr, where=el_arr!=0)
         el.fill(np.nan_to_num(el_arr))
     return s_inv
 
