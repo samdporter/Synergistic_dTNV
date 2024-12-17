@@ -1,4 +1,5 @@
 from cil.optimisation.utilities import callbacks
+from cil.optimisation.functions import ScaledFunction
 from cil.framework import BlockDataContainer
 from sirf.STIR import ImageData
 import pandas as pd
@@ -105,11 +106,13 @@ class SubsetValueCallback(Callback):
         
     def __call__(self, algo):
         if self.skip_iteration(algo):
-            return
-        for i, function in enumerate(algo.f.functions):
+            return  
+        try: func_list = algo.f.functions
+        except: func_list = algo.f.function.functions
+        for i, function in enumerate(func_list):
             # needs to add to new line for iteration algo.iteration
             self.subset_values.at[algo.iteration, f"Subset {i}"] = function(algo.solution)
         # add a sum at first column
-        self.subset_values.at[algo.iteration, "Sum"] = sum([function(algo.solution) for function in algo.f.functions])
+        self.subset_values.at[algo.iteration, "Sum"] = sum([function(algo.solution) for function in func_list])
         self.subset_values.to_csv(f"{self.filename}.csv")
         

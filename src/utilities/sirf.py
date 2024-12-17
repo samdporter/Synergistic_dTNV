@@ -59,7 +59,7 @@ def get_s_inv_from_obj(obj_funs, initial_estimates):
     for i, el in enumerate(s_inv.containers):
         for obj_fun in obj_funs[i]:
             tmp = obj_fun.get_subset_sensitivity(0)
-            tmp.maximum(0, out = tmp)
+            tmp = tmp.maximum(0)
             el += tmp
         el_arr = el.as_array()
         el_arr = np.reciprocal(el_arr, where=el_arr!=0)
@@ -68,12 +68,12 @@ def get_s_inv_from_obj(obj_funs, initial_estimates):
 
 def get_s_inv_from_am(ams, initial_estimates):
     # get subset_sensitivity BDC for preconditioner
-    s_inv = initial_estimates.get_uniform_copy(0)
+    s_inv = initial_estimates*0
     for i, el in enumerate(s_inv.containers):
         for am in ams[i]:
             one = am.forward(initial_estimates[i]).get_uniform_copy(1)
             tmp = am.backward(one)
-            tmp.maximum(0, out = tmp)
+            tmp = tmp.maximum(0)
             el += tmp
         el_arr = el.as_array()
         el_arr = np.reciprocal(el_arr, where=el_arr!=0)

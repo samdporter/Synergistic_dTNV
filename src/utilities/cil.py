@@ -105,8 +105,17 @@ class ArmijoStepSearchRule(StepSizeRule):
             if self.f_x is None:
                 self.f_x = algorithm.f(algorithm.solution) + algorithm.g(algorithm.solution)
             precond_grad = algorithm.preconditioner.apply(algorithm, algorithm.gradient_update)
+
+            # if x is zero and the gradient is zero, we should ignore the gradient
+            is_zero = algorithm.solution.power(0)
+            precond_grad_negs = precond_grad.minimum(0)
+            precond_grad_pos = precond_grad.maximum(0)
+            precond_grad = precond_grad_pos + precond_grad_negs * is_zero
+
             g_norm = algorithm.gradient_update.dot(precond_grad)
             print(f"Old Objective value: {self.f_x}")
+
+
             
             # Reset step size to initial value for the Armijo search
             step_size = self.initial_step_size

@@ -1,4 +1,5 @@
 from cil.optimisation.utilities import Preconditioner
+from cil.framework import BlockDataContainer
 import numpy as np
 
 class ConstantPreconditioner(Preconditioner):
@@ -35,6 +36,7 @@ class PreconditionerWithInterval(Preconditioner):
             out = algorithm.solution.copy()
         if algorithm.iteration < self.freeze_iter:
             if algorithm.iteration % self.update_interval == 0 or self.precond is None:
+                print("Updating preconditioner")
                 self.precond = self.compute_preconditioner(algorithm)
             out.fill(gradient * self.precond)
             return out
@@ -55,9 +57,11 @@ class BSREMPreconditioner(PreconditionerWithInterval):
     """
     Preconditioner for BSREM.
     """
-    def __init__(self, s_inv, update_interval=1, freeze_iter=np.inf, epsilon=1e-6):
+    def __init__(self, s_inv, update_interval=1, freeze_iter=np.inf, epsilon=None):
         super().__init__(update_interval, freeze_iter)
         self.s_inv = s_inv
+        if epsilon is None:
+            epsilon = s_inv.max() * 1e-6
         self.epsilon = epsilon
 
     def compute_preconditioner(self, algorithm):
@@ -81,7 +85,7 @@ class HarmonicMeanPreconditioner(PreconditionerWithInterval):
     """
     Preconditioner that combines two preconditioners using a harmonic mean.
     """
-    def __init__(self, preconds, update_interval=1, freeze_iter=np.inf, epsilon=1e-6):
+    def __init__(self, preconds, update_interval=np.inf, freeze_iter=np.inf, epsilon=1e-6):
         super().__init__(update_interval, freeze_iter)
         self.preconds = preconds
         self.epsilon = epsilon
@@ -95,7 +99,7 @@ class MeanPreconditioner(PreconditionerWithInterval):
     """
     Precoditioner that combines two preconditioners using a simple mean.
     """
-    def __init__(self, preconds, update_interval=1, freeze_iter=np.inf):
+    def __init__(self, preconds, update_interval=np.inf, freeze_iter=np.inf):
         super().__init__(update_interval, freeze_iter)
         self.preconds = preconds
         
