@@ -14,9 +14,6 @@ class ConstantPreconditioner(Preconditioner):
             out = algorithm.solution.copy()
         out.fill(gradient * self.value)
         return out
-    
-    def compute_preconditioner(self, algorithm):
-        return self.value
 
 class PreconditionerWithInterval(Preconditioner):
     """
@@ -117,3 +114,45 @@ class IdentityPreconditioner(PreconditionerWithInterval):
         
     def compute_preconditioner(self, algorithm):
         return 1
+    
+class OrderedSubsetPreconditioner(PreconditionerWithInterval):
+
+    def __init__(self, num_subsets, update_interval=1, freeze_iter=np.inf):
+        super().__init__(update_interval, freeze_iter)
+        self.num_subsets = num_subsets
+
+    def compute_preconditioner(self, algorithm):
+        pass
+    
+class OrderedSubsetEMPreconditioner(OrderedSubsetPreconditioner):
+    """
+    
+    """
+    def __init__(self, num_subsets, sensitivities, update_interval=1, freeze_iter=np.inf):
+        super().__init__(num_subsets, update_interval, freeze_iter)
+
+        self.counter = 0
+        self.sensitivities = sensitivities
+
+    def compute_preconditioner(self, algorithm, out = None):
+        out = algorithm.x / (self.sensitivities[self.counter % self.num_subsets] + 1e-6)
+        self.counter += 1
+        return out
+        
+class OrderedSubsetKernelisedEMPreconditioner(OrderedSubsetPreconditioner):
+    """
+    
+    """
+    def __init__(self, num_subsets, sensitivities, kernel, update_interval=1, freeze_iter=np.inf, epsilon = 1e-6):
+        super().__init__(num_subsets, update_interval, freeze_iter)
+
+        self.counter = 0
+        self.sensitivities = sensitivities
+        self.kernel = kernel
+        self.epsilon = epsilon
+
+    def compute_preconditioner(self, algorithm, out = None):
+        out = algorithm.x / (self.kernel.adjoint(self.sensitivities[self.counter % self.num_subsets]) + self.epsilon)
+        self.counter += 1
+        # note this. In order to fit with CIL's "approximate gradient" format.
+        return out / self.num_subsets

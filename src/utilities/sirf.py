@@ -110,7 +110,7 @@ def get_subset_data(data, num_subsets, stagger = "staggered"):
     views=data.dimensions()[2]
     indices = list(range(views))
     partitions_idxs = partitioner.partition_indices(num_subsets, indices, stagger = stagger)
-    datas = [data.get_subset(partitions_idxs[i]) for i in range(num_subsets[0])]
+    datas = [data.get_subset(partitions_idxs[i]) for i in range(num_subsets)]
 
     return datas
 

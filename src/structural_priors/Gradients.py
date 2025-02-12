@@ -104,8 +104,12 @@ class Jacobian(Operator):
         
         self.numpy_out = numpy_out
         self.anatomical = anatomical
-
-        self.grad = self._initialise_gradient(anatomical, voxel_sizes, method, bnd_cond, gpu)
+        # check if anatomical is a list
+        if isinstance(anatomical, list):
+            self.grad = [self._initialise_gradient(anatomical, voxel_sizes, method, bnd_cond, gpu) for anatomical in self.anatomical]
+            print('Multiple anatomical images detected. This will fail if different number of images are passed to direct and adjoint methods')
+        else:
+            self.grad = self._initialise_gradient(anatomical, voxel_sizes, method, bnd_cond, gpu)
 
     def _initialise_gradient(self, anatomical, voxel_sizes, method, bnd_cond, gpu):
 
@@ -134,10 +138,16 @@ class Jacobian(Operator):
 
         num_images = images.shape[-1]
         # if weights is a list of arrays, we need to expand dims
-        if weights is not None:
-            jac_list = [weights[idx] * self.grad.direct(images[..., idx]) for idx in range(num_images)]
+        if isinstance(self.grad, list):
+            if weights is not None:
+                jac_list = [weights[idx] * self.grad[idx].direct(images[..., idx]) for idx in range(num_images)]
+            else:
+                jac_list = [self.grad[idx].direct(images[..., idx]) for idx in range(num_images)]
         else:
-            jac_list = [self.grad.direct(images[..., idx]) for idx in range(num_images)]
+            if weights is not None:
+                jac_list = [weights[idx] * self.grad.direct(images[..., idx]) for idx in range(num_images)]
+            else:
+                jac_list = [self.grad.direct(images[..., idx]) for idx in range(num_images)]
 
         if self.gpu:
             return torch.stack(jac_list, dim=-2).cpu().numpy() if self.numpy_out else torch.stack(jac_list, dim=-2)
@@ -155,11 +165,16 @@ class Jacobian(Operator):
         num_images = jacobians.shape[-2]
         adjoint_list = []
         for idx in range(num_images):
-            if self.weights is not None:
-                adjoint_list.append(self.weights[idx] * self.grad.adjoint(jacobians[..., idx,:]))
+            if isinstance(self.grad, list):
+                if self.weights is not None:
+                    adjoint_list.append(self.weights[idx] * self.grad[idx].adjoint(jacobians[..., idx,:]))
+                else:
+                    adjoint_list.append(self.grad[idx].adjoint(jacobians[..., idx,:]))
             else:
-                adjoint_list.append(self.grad.adjoint(jacobians[..., idx,:]))
-                    
+                if self.weights is not None:
+                    adjoint_list.append(self.weights[idx] * self.grad.adjoint(jacobians[..., idx,:]))
+                else:
+                    adjoint_list.append(self.grad.adjoint(jacobians[..., idx,:]))
         if self.gpu:
             return torch.stack(adjoint_list, dim=-1).cpu().numpy() if self.numpy_out else torch.stack(adjoint_list, dim=-1)
         else:

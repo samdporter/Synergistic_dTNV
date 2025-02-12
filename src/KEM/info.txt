@@ -1,0 +1,26 @@
+
+INFO: Detected view-mashing factor 2 from the number of views (96) and the number of detectors per ring (384).
+Adjusting the azimuthal angle offset accordingly (an extra offset of 0.46875 degrees)
+
+INFO: (subset)sensitivity filename(s) not set so I will compute the (subset)sensitivities
+
+INFO: Disabling symmetries for the projector as image is rotated due to phi offset of the scanner.
+
+INFO: Computing sensitivity
+
+INFO: Using distributable_computation with 14 threads on 16 processors.
+
+INFO: Starting loop with 14 threads
+
+INFO: Number of (cancelled) singularities: 0
+Number of (cancelled) negative numerators: 0
+
+INFO: Computation times for distributable_computation, CPU 1.66s, wall-clock 0.134935s
+
+INFO: Done computing sensitivity
+
+INFO: This took 1.7399999999999984 seconds CPU time.
+
+INFO: Kernel from anatomical image calculated 
+
+INFO: SDs from anatomical images calculated = '0.0238493'

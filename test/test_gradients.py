@@ -112,16 +112,18 @@ def main(args):
         grad_gpu = [Gradient(voxel_sizes[i], gpu=True, numpy_out=True, bnd_cond = bnd_cond) for i in range(5)]
         grad_cil = [GradientOperator(images[i], bnd_cond = bnd_cond) for i in range(5)]
 
-        anatomical = np.random.random((30,30,30))
+        anatomical_grad = np.random.random((30,30,30))
         
-        dgrad_cpu = [DirectionalGradient(anatomical, voxel_sizes[i], gpu=False, bnd_cond = bnd_cond) for i in range(5)]
-        dgrad_gpu = [DirectionalGradient(anatomical, voxel_sizes[i], gpu=True, numpy_out=True, bnd_cond = bnd_cond) for i in range(5)]
+        dgrad_cpu = [DirectionalGradient(anatomical_grad, voxel_sizes[i], gpu=False, bnd_cond = bnd_cond) for i in range(5)]
+        dgrad_gpu = [DirectionalGradient(anatomical_grad, voxel_sizes[i], gpu=True, numpy_out=True, bnd_cond = bnd_cond) for i in range(5)]
 
         jacobian_cpu = [Jacobian(voxel_sizes[i], gpu=False, bnd_cond = bnd_cond) for i in range(5)]
         jacobian_gpu = [Jacobian(voxel_sizes[i], gpu=True, numpy_out=True, bnd_cond = bnd_cond) for i in range(5)]
 
-        djacobian_cpu = [Jacobian(voxel_sizes[i], gpu=False, bnd_cond = bnd_cond, anatomical=anatomical) for i in range(5)]
-        djacobian_gpu = [Jacobian(voxel_sizes[i], gpu=True, numpy_out=True, bnd_cond = bnd_cond, anatomical=anatomical) for i in range(5)]
+        anatomical_jac = [np.random.random((30,30,30)) for _ in range(2)]
+
+        djacobian_cpu = [Jacobian(voxel_sizes[i], gpu=False, bnd_cond = bnd_cond, anatomical=anatomical_jac) for i in range(5)]
+        djacobian_gpu = [Jacobian(voxel_sizes[i], gpu=True, numpy_out=True, bnd_cond = bnd_cond, anatomical=anatomical_jac) for i in range(5)]
 
         for i in range(5):
 

@@ -9,6 +9,11 @@ def get_pet_data(path):
     pet_data["additive"] = AcquisitionData(os.path.join(path,  "PET/additive.hs"))
     pet_data["normalisation"] = AcquisitionData(os.path.join(path,  "PET/mult_factors.hs"))
     pet_data["initial_image"] = ImageData(os.path.join(path,  "PET/initial_image.hv")).maximum(0)
+    pet_data["attenuation"] = ImageData(os.path.join(path,  "PET/umap.hv"))
+    try:
+        pet_data["spect"] = ImageData(os.path.join(path,  "PET/spect.hv"))
+    except:
+        print("No SPECT guidance image")
 
     return pet_data
 

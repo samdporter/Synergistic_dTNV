@@ -1,0 +1,18 @@
+!INTERFILE  :=
+!name of data file := emission.v
+!total number of images := 47
+!data offset in bytes := 0
+!imagedata byte order := LITTLEENDIAN
+!number format := short float
+!number of bytes per pixel := 4
+matrix axis label [1] := x
+!matrix size [1] := 337
+scaling factor (mm/pixel) [1] := 2.1306
+matrix axis label [2] := y
+!matrix size [2] := 337
+scaling factor (mm/pixel) [2] := 2.1306
+;Correct value is of keyword (commented out)
+;!slice thickness (pixels) := 1.53478
+;Value for Analyze
+!slice thickness (pixels) := 3.27
+!END OF INTERFILE :=
