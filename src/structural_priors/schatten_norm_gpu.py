@@ -185,7 +185,7 @@ def charbonnier_grad_torch(x, eps):
 def charbonnier_hessian_diag_torch(x, eps):
     return eps**2 / (x**2 + eps**2)**(3/2)
 
-def charbinier_inv_hessian_diag_torch(x, eps):
+def charbonnier_inv_hessian_diag_torch(x, eps):
     return (x**2 + eps**2)**(3/2) / eps**2
 
 def fair_torch(x, eps):
@@ -218,7 +218,8 @@ def nothing_torch(x, eps=0):
 def nothing_grad_torch(x, eps=0):
     return torch.ones_like(x)
 
-def norm_torch(M, func, smoothing_func, order, eps):
+def norm_torch(M, func, smoothing_func, 
+               order, eps, tail=None):
 
     if order == 0:
         H = M.T @ M
@@ -232,10 +233,20 @@ def norm_torch(M, func, smoothing_func, order, eps):
         eigenvalues = eigenvalues_3x3_torch(H)[1:]
 
     singularvalues = torch.sqrt(eigenvalues)
-    singularvalues = smoothing_func(singularvalues, eps)
-    return func(singularvalues)
 
-def norm_func_torch_xxt(X, func, tau):
+    # Create binary mask: 1 for smallest 'tail' singular values, 0 elsewhere.
+    if tail is not None:
+        sorted_vals, sorted_idx = torch.sort(singularvalues)
+        mask = torch.zeros_like(singularvalues)
+        mask[sorted_idx[:tail]] = 1.0
+    else:
+        mask = torch.ones_like(singularvalues)
+    
+    # Apply the smoothing function only to the masked (tail) singular values.
+    smoothed = smoothing_func(singularvalues * mask, eps)
+    return func(smoothed)
+
+def norm_func_torch_xxt(X, func, tau, tail=None):
 
     H = X@X.T
 
@@ -249,13 +260,21 @@ def norm_func_torch_xxt(X, func, tau):
         raise ValueError(f"Matrix size {H.shape} not supported")
 
     S = torch.sqrt(S_square)
+    if tail is not None:
+        sorted_vals, sorted_idx = torch.sort(S)
+        mask = torch.zeros_like(S)
+        mask[sorted_idx[:tail]] = 1.0
+    else:
+        mask = torch.ones_like(S)
+    
     S_inv = pseudo_inverse_torch(S)
-    S_func = func(S, tau)
+    # Apply func only to the tail singular values (via the mask)
+    S_func = func(S * mask, tau)
 
     # Reconstruct the result matrix
     return U @ torch.diag(S_func) @ torch.diag(S_inv) @ U.T @ X
 
-def norm_func_torch_xtx(X, func, tau):
+def norm_func_torch_xtx(X, func, tau, tail=None):
 
     H = X.T@X
 
@@ -269,41 +288,50 @@ def norm_func_torch_xtx(X, func, tau):
         raise ValueError(f"Matrix size {H.shape} not supported")
 
     S = torch.sqrt(S_square)
+
+    if tail is not None:
+        S, sort_idx = torch.sort(S)
+        S = S[:tail]
+        # also restrict the singular vectors to the corresponding columns:
+        V = V[:, sort_idx][:, :tail]
+
     S_inv = pseudo_inverse_torch(S)
     S_func = func(S, tau)
 
     # Reconstruct the result matrix
     return X @ V @ torch.diag(S_inv) @ torch.diag(S_func)  @ V.T
 
-def norm_func_torch(X, func, tau, order=0):
+def norm_func_torch(X, func, tau, order=0, tail=None):
 
     if order == 0:
-        return norm_func_torch_xtx(X, func, tau)
+        return norm_func_torch_xtx(X, func, tau, tail)
     elif order == 1:
-        return norm_func_torch_xxt(X, func, tau)
+        return norm_func_torch_xxt(X, func, tau, tail)
     else:
         raise ValueError("Invalid order")
 
-def vectorised_norm(A, func, smoothing_func, order=0, eps=0):
+def vectorised_norm(A, func, smoothing_func, order=0, eps=0, tail=None):
     def ordered_norm(A):
-        return norm_torch(A, func, smoothing_func, order, eps)
+        return norm_torch(A, func, smoothing_func, order, eps, tail)
 
     # Apply vmap across the last two dimensions
     return vmap(vmap(vmap(ordered_norm, in_dims=0), in_dims=0), in_dims=0)(A)
 
-def vectorised_norm_func(A, func, tau, order=0):
+def vectorised_norm_func(A, func, tau, order=0, tail=None):
 
     def norm_prox_element(M):
-        return norm_func_torch(M, func, tau, order)
+        return norm_func_torch(M, func, tau, order, tail)
 
     return vmap(vmap(vmap(norm_prox_element, in_dims=0), in_dims=0), in_dims=0)(A)
+
 
 class GPUVectorialTotalVariation(Function):
     """ 
     GPU implementation of the vectorial total variation function.
     """
     def __init__(self, eps=None, norm = 'nuclear',
-                 smoothing_function=None, numpy_out=False):        
+                 smoothing_function=None, numpy_out=False,
+                 tail=None):        
 
         """Initializes the GPUVectorialTotalVariation class.
         """    
@@ -314,6 +342,7 @@ class GPUVectorialTotalVariation(Function):
         self.norm = norm
         self.smoothing_function = smoothing_function
         self.numpy_out = numpy_out
+        self.tail = tail  # if not None, only the smallest singular values are used
 
     def direct(self, x):
 
@@ -336,7 +365,10 @@ class GPUVectorialTotalVariation(Function):
         else:
             smoothing_func = nothing_torch
 
-        return vectorised_norm(x, norm_func, smoothing_func, order, self.eps)
+        return torch.nan_to_num(
+            vectorised_norm(x, norm_func, smoothing_func, order, self.eps),
+            nan=0.0, posinf=0.0, neginf=0.0
+        )
 
     def __call__(self, x):
         if isinstance(x, np.ndarray):
@@ -362,7 +394,10 @@ class GPUVectorialTotalVariation(Function):
         else:
             raise ValueError('Norm not defined')
 
-        return vectorised_norm_func(x, norm_func, tau, order)
+        return torch.nan_to_num(
+            vectorised_norm_func(x, norm_func, tau, order),
+            nan=0.0, posinf=0.0, neginf=0.0
+        )
     
     def gradient(self, x):
         if isinstance(x, np.ndarray):
@@ -382,7 +417,10 @@ class GPUVectorialTotalVariation(Function):
         else:
             raise ValueError('Smoothing function not defined')
 
-        return vectorised_norm_func(x, smoothing_func, self.eps, order)
+        return torch.nan_to_num(
+            vectorised_norm_func(x, smoothing_func, self.eps, order),
+            nan=0.0, posinf=0.0, neginf=0.0
+        )
 
     def hessian_diag(self, x):
         if isinstance(x, np.ndarray):
@@ -402,7 +440,10 @@ class GPUVectorialTotalVariation(Function):
         else:
             raise ValueError('Smoothing function not defined')
 
-        return vectorised_norm_func(x, smoothing_func, self.eps, order)
+        return torch.nan_to_num(
+            vectorised_norm_func(x, smoothing_func, self.eps, order),
+            nan=0.0, posinf=0.0, neginf=0.0
+        )
     
     def inv_hessian_diag(self, x):
         if isinstance(x, np.ndarray):
@@ -416,10 +457,41 @@ class GPUVectorialTotalVariation(Function):
         if self.smoothing_function == 'fair':
             smoothing_func = fair_inv_hessian_diag_torch
         elif self.smoothing_function == 'charbonnier':
-            smoothing_func = charbinier_inv_hessian_diag_torch
+            smoothing_func = charbonnier_inv_hessian_diag_torch
         elif self.smoothing_function == 'perona_malik':
             smoothing_func = perona_malik_inv_hessian_diag_torch
         else:
             raise ValueError('Smoothing function not defined')
 
-        return vectorised_norm_func(x, smoothing_func, self.eps, order)
+        return torch.nan_to_num(
+            vectorised_norm_func(x, smoothing_func, self.eps, order),
+            nan=0.0, posinf=0.0, neginf=0.0
+        )
+        
+        
+def fair_jtv_hessian_diag_torch(A, eps):
+    sq = torch.sum(torch.square(A))
+    return fair_hessian_diag_torch(torch.sqrt(sq), eps) * torch.ones_like(A)
+
+def fair_jtv_inv_hessian_diag_torch(A, eps):
+    sq = torch.sum(torch.square(A))
+    return fair_inv_hessian_diag_torch(torch.sqrt(sq), eps)* torch.ones_like(A)
+
+def charbonnier_jtv_hessian_diag_torch(A, eps):
+    sq = torch.sum(torch.square(A))
+    return charbonnier_hessian_diag_torch(torch.sqrt(sq), eps) * torch.ones_like(A)
+
+def charbonnier_jtv_inv_hessian_diag_torch(A, eps):
+    sq = torch.sum(torch.square(A))
+    return charbonnier_inv_hessian_diag_torch(torch.sqrt(sq), eps)* torch.ones_like(A)
+
+def perona_malik_jtv_hessian_diag_torch(A, eps):
+    sq = torch.sum(torch.square(A))
+    return perona_malik_hessian_diag_torch(torch.sqrt(sq), eps) * torch.ones_like(A)
+
+def vectorised_hessian_approx_norm_func_torch(A, eps, func):
+    
+    return vmap(vmap(vmap(func, in_dims=0), in_dims=0), in_dims=0)(A, eps)
+    
+
+

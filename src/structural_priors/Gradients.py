@@ -90,17 +90,14 @@ class CompositionOperator(Operator):
 
 class Jacobian(Operator):
     """ Jacobian operation with optional weighting """
-    def __init__(self, voxel_sizes=(1, 1, 1), weights=None, kappas=None,
+    def __init__(self, voxel_sizes=(1, 1, 1),
                  bnd_cond='Neumann', method='forward',
                  anatomical=None, numpy_out=True, gpu=False) -> None:
         
         self.gpu = gpu
         
         self.voxel_sizes = voxel_sizes
-        self.weights = weights
-
-        if self.gpu and weights is not None:
-                self.weights = [torch.tensor(k, device=device) for k in weights]
+        self.method = method
         
         self.numpy_out = numpy_out
         self.anatomical = anatomical
@@ -122,15 +119,6 @@ class Jacobian(Operator):
         return DirectionalGradient(anatomical, voxel_sizes=voxel_sizes, method=method, bnd_cond=bnd_cond, gpu=gpu, numpy_out=False)
     
     def direct(self, images):
-
-        # expand weights dims
-        if self.weights is not None:
-            if self.gpu:
-                weights = [torch.unsqueeze(k, -1) for k in self.weights]
-            else:
-                weights = [np.expand_dims(k, -1) for k in self.weights]
-        else:
-            weights = None
             
         # if gpu is enabled, convert images to torch tensor
         if self.gpu:
@@ -139,15 +127,9 @@ class Jacobian(Operator):
         num_images = images.shape[-1]
         # if weights is a list of arrays, we need to expand dims
         if isinstance(self.grad, list):
-            if weights is not None:
-                jac_list = [weights[idx] * self.grad[idx].direct(images[..., idx]) for idx in range(num_images)]
-            else:
-                jac_list = [self.grad[idx].direct(images[..., idx]) for idx in range(num_images)]
+            jac_list = [self.grad[idx].direct(images[..., idx]) for idx in range(num_images)]
         else:
-            if weights is not None:
-                jac_list = [weights[idx] * self.grad.direct(images[..., idx]) for idx in range(num_images)]
-            else:
-                jac_list = [self.grad.direct(images[..., idx]) for idx in range(num_images)]
+            jac_list = [self.grad.direct(images[..., idx]) for idx in range(num_images)]
 
         if self.gpu:
             return torch.stack(jac_list, dim=-2).cpu().numpy() if self.numpy_out else torch.stack(jac_list, dim=-2)
@@ -166,21 +148,62 @@ class Jacobian(Operator):
         adjoint_list = []
         for idx in range(num_images):
             if isinstance(self.grad, list):
-                if self.weights is not None:
-                    adjoint_list.append(self.weights[idx] * self.grad[idx].adjoint(jacobians[..., idx,:]))
-                else:
-                    adjoint_list.append(self.grad[idx].adjoint(jacobians[..., idx,:]))
+                adjoint_list.append(self.grad[idx].adjoint(jacobians[..., idx,:]))
             else:
-                if self.weights is not None:
-                    adjoint_list.append(self.weights[idx] * self.grad.adjoint(jacobians[..., idx,:]))
-                else:
-                    adjoint_list.append(self.grad.adjoint(jacobians[..., idx,:]))
+                adjoint_list.append(self.grad.adjoint(jacobians[..., idx,:]))
         if self.gpu:
             return torch.stack(adjoint_list, dim=-1).cpu().numpy() if self.numpy_out else torch.stack(adjoint_list, dim=-1)
         else:
             res =  np.stack(adjoint_list, axis=-1)
         return res
 
+    def sensitivity(self, images):
+        """
+        Compute an approximation of J(1) for a 3D image, yielding a sensitivity field
+        of shape (z, y, x, n_mod, 3), where the last dimension corresponds to the
+        spatial derivative components [1/v_0, 1/v_1, 1/v_2].
+
+        Each voxel's sensitivity vector is given by:
+            [1/v_0, 1/v_1, 1/v_2],
+        which is appropriate since a finite-difference approximation of a constant
+        would yield these directional scaling factors. This properly normalizes the 
+        Jacobian operator in the Hessian approximation H(z) ~ B^T J^T f''(B J(x)) B J(1).
+
+        Parameters:
+        images (np.ndarray or torch.Tensor): Array of shape (z, y, x, n_mod).
+
+        Returns:
+        np.ndarray or torch.Tensor: Sensitivity image with shape (z, y, x, n_mod, 3).
+        """
+        spatial_shape = images.shape[:-1]  # (z, y, x)
+        n_mod = images.shape[-1]
+        dims = 3  # number of spatial dimensions for a 3D image
+
+        if self.gpu:
+            # Ensure we are operating on the GPU
+            device = images.device if isinstance(images, torch.Tensor) else torch.device("cuda")
+            # Create a ones tensor with an extra dimension for the gradient directions.
+            S = torch.ones((*spatial_shape, n_mod, dims), device=device)
+            for i in range(dims):
+                if self.voxel_sizes[i] != 1.0:
+                    S[..., i] /= self.voxel_sizes[i]
+            return S
+        else:
+            # CPU version using numpy
+            S = np.ones((*spatial_shape, n_mod, dims))
+            for i in range(dims):
+                if self.voxel_sizes[i] != 1.0:
+                    S[..., i] /= self.voxel_sizes[i]
+            return S
+
+                   
+                
+                      
+
+        
+        
+       
+       
 class Gradient(Operator):
     def __init__(self, voxel_sizes, method='forward', bnd_cond='Neumann', 
                  numpy_out=False, gpu=False):
