@@ -50,18 +50,12 @@ class SaveGradientUpdateCallback(Callback):
         elif isinstance(algo.gradient_update, BlockDataContainer):
             for i, el in enumerate(algo.gradient_update.containers):
                 el.write(f"{self.filename}_{i}_{algo.iteration}.hv")
-                
-class PrintObjectiveCallback(Callback):
-    """
-    CIL Callback that prints the objective function value.
-    """
-    def __init__(self, interval, **kwargs):
-        super().__init__(interval, **kwargs)
 
+class PrintObjectiveCallback(callbacks.Callback):
+    
     def __call__(self, algo):
-        if self.skip_iteration(algo):
-            return
-        print(f"Iteration {algo.iteration}, Objective {algo.objective[-1]}")
+        if algo.iteration % algo.update_objective_interval == 0:
+            print(f"iter: {algo.iteration} objective: {algo.objective[-1]}")
         
 class SaveObjectiveCallback(Callback):
     """

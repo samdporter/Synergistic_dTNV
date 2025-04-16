@@ -5,6 +5,18 @@ import numpy as np
 from sirf.contrib.partitioner import partitioner
 from sirf.STIR import TruncateToCylinderProcessor, SeparableGaussianImageFilter
 
+def set_up_partitioned_objectives(pet_data, spect_data, pet_obj_funs, spect_obj_funs):
+
+    """ Returns a CIL SumFunction for the partitioned objective functions """
+    
+    for obj_fun in pet_obj_funs:
+        obj_fun.set_up(pet_data['initial_image'])
+
+    for obj_fun in spect_obj_funs:
+        obj_fun.set_up(spect_data['initial_image'])
+    
+    return pet_obj_funs, spect_obj_funs
+
 def get_block_objective(desired_image, other_image, obj_fun, order = 0):
 
     """ Returns a block CIL objective function for the given SIRF objective function """
@@ -19,18 +31,6 @@ def get_block_objective(desired_image, other_image, obj_fun, order = 0):
         return OperatorCompositionFunction(obj_fun, BlockOperator(o2d_zero, d2d_id, shape = (1,2)))
     else:
         raise ValueError("Order must be 0 or 1")
-
-def set_up_partitioned_objectives(pet_data, spect_data, pet_obj_funs, spect_obj_funs):
-
-    """ Returns a CIL SumFunction for the partitioned objective functions """
-    
-    for obj_fun in pet_obj_funs:
-        obj_fun.set_up(pet_data['initial_image'])
-
-    for obj_fun in spect_obj_funs:
-        obj_fun.set_up(spect_data['initial_image'])
-    
-    return pet_obj_funs, spect_obj_funs
 
 def set_up_kl_objectives(pet_data, spect_data, pet_datas, pet_norms, spect_datas, pet_ams, spect_ams):
 
@@ -53,18 +53,25 @@ def set_up_kl_objectives(pet_data, spect_data, pet_datas, pet_norms, spect_datas
 
     return pet_obj_funs, spect_obj_funs
 
-def get_s_inv_from_obj(obj_funs, initial_estimates):
+def get_s_inv_from_objs(obj_funs, initial_estimates):
     # get subset_sensitivity BDC for preconditioner
     s_inv = initial_estimates.get_uniform_copy(0)
     for i, el in enumerate(s_inv.containers):
-        for obj_fun in obj_funs[i]:
-            tmp = obj_fun.get_subset_sensitivity(0)
-            tmp = tmp.maximum(0)
-            el += tmp
-        el_arr = el.as_array()
-        el_arr = np.reciprocal(el_arr, where=el_arr!=0)
-        el.fill(np.nan_to_num(el_arr))
+        for j, obj_fun in enumerate(obj_funs[i]):
+            if j == 0: 
+                sens = obj_fun.get_subset_sensitivity(0)
+            else:
+                sens += obj_fun.get_subset_sensitivity(0)
+        # Compute maximum with zero (returning a new container)
+        sens.maximum(0, out = sens)
+        sens_arr = sens.as_array().astype(np.float32)
+        # We can afford to avoid zeros because
+        # a zero sensitivity means we're outside the FOV
+        inv_sens_arr = np.reciprocal(sens_arr, where=sens_arr != 0)
+        # there really shouldn't be any NaNs, but just in case
+        s_inv.containers[i].fill(np.nan_to_num(inv_sens_arr) )
     return s_inv
+
 
 def get_s_inv_from_am(ams, initial_estimates):
     # get subset_sensitivity BDC for preconditioner
@@ -73,12 +80,42 @@ def get_s_inv_from_am(ams, initial_estimates):
         for am in ams[i]:
             one = am.forward(initial_estimates[i]).get_uniform_copy(1)
             tmp = am.backward(one)
-            tmp = tmp.maximum(0)
             el += tmp
+        el = el.maximum(0)
         el_arr = el.as_array()
         el_arr = np.reciprocal(el_arr, where=el_arr!=0)
         el.fill(np.nan_to_num(el_arr))
     return s_inv
+
+def get_s_inv_from_subset_objs(obj_funs, initial_estimate):
+    # get subset_sensitivity BDC for preconditioner
+    s_inv = initial_estimate.get_uniform_copy(0)
+    for j, obj_fun in enumerate(obj_funs):
+        if j == 0: 
+            sens = obj_fun.get_subset_sensitivity(0)
+        else:
+            sens += obj_fun.get_subset_sensitivity(0)
+    # Compute maximum with zero (returning a new container)
+    sens = sens.maximum(0)
+    sens_arr = sens.as_array().astype(np.float32)
+    # We can afford to avoid zeros because
+    # a zero sensitivity means we're outside the FOV
+    inv_sens_arr = np.reciprocal(sens_arr, where=sens_arr != 0)
+    # there really shouldn't be any NaNs, but just in case
+    s_inv.fill(np.nan_to_num(inv_sens_arr) )
+    return s_inv
+
+def get_sensitivity_from_subset_objs(obj_funs, initial_estimate):
+    # get subset_sensitivity BDC for preconditioner
+    sens = initial_estimate.get_uniform_copy(0)
+    for j, obj_fun in enumerate(obj_funs):
+        if j == 0: 
+            sens = obj_fun.get_subset_sensitivity(0)
+        else:
+            sens += obj_fun.get_subset_sensitivity(0)
+    # Compute maximum with zero (returning a new container)
+    sens = sens.maximum(0)
+    return sens
 
 def compute_inv_hessian_diagonals(bdc, obj_funs_list):
 
@@ -117,5 +154,5 @@ def get_subset_data(data, num_subsets, stagger = "staggered"):
 def get_filters():
     cyl, gauss = TruncateToCylinderProcessor(), SeparableGaussianImageFilter()
     cyl.set_strictly_less_than_radius(True)
-    gauss.set_fwhms((7,7,7))
+    gauss.set_fwhms((10,10,10))
     return cyl, gauss
