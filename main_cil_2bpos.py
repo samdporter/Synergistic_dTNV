@@ -69,8 +69,8 @@ def parse_spect_res(x):
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="BSREM")
-    parser.add_argument("--alpha", type=float, default=0.0005, help="alpha")
-    parser.add_argument("--beta", type=float, default=0.5, help="beta")
+    parser.add_argument("--alpha", type=float, default=300, help="alpha")
+    parser.add_argument("--beta", type=float, default=1, help="beta")
     parser.add_argument("--delta", type=float, default=None, help="delta")
     parser.add_argument(
         "--num_subsets", type=str, default="9,12", help="number of subsets"
@@ -79,7 +79,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--num_epochs", type=int, default=30, help="number of epochs")
     parser.add_argument("--use_kappa", action="store_true", help="use kappa")
     parser.add_argument(
-        "--initial_step_size", type=float, default=0.1, help="initial step size"
+        "--initial_step_size", type=float, default=0.01, help="initial step size"
     )
     parser.add_argument("--iterations", type=int, default=250, help="max iterations")
     parser.add_argument(
@@ -630,7 +630,7 @@ def get_callbacks(args, update_interval: int) -> List[Any]:
     return [
         SaveImageCallback(os.path.join(args.output_path, "image"), 1),
         SaveGradientUpdateCallback(os.path.join(args.output_path, "gradient"), 1),
-        SavePreconditionerCallback(os.path.join(args.output_path, "preconditioner"),1),
+        SavePreconditionerCallback(os.path.join(args.output_path, "preconditioner"), 1),
         PrintObjectiveCallback(update_interval),
         SaveObjectiveCallback(os.path.join(args.output_path, "objective"), update_interval),
     ]

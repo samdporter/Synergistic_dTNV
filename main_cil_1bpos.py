@@ -66,17 +66,17 @@ def parse_spect_res(x):
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="BSREM")
-    parser.add_argument("--alpha", type=float, default=256, help="alpha")
-    parser.add_argument("--beta", type=float, default=0.5, help="beta")
+    parser.add_argument("--alpha", type=float, default=1024, help="alpha")
+    parser.add_argument("--beta", type=float, default=1, help="beta")
     parser.add_argument("--delta", type=float, default=None, help="delta")
     parser.add_argument(
         "--num_subsets", type=str, default="9,12", help="number of subsets"
     )
     parser.add_argument("--no_prior", action="store_true", help="no prior")
-    parser.add_argument("--num_epochs", type=int, default=30, help="number of epochs")
+    parser.add_argument("--num_epochs", type=int, default=500, help="number of epochs")
     parser.add_argument("--use_kappa", action="store_true", help="use kappa")
     parser.add_argument(
-        "--initial_step_size", type=float, default=1, help="initial step size"
+        "--initial_step_size", type=float, default=0.1, help="initial step size"
     )
     parser.add_argument("--iterations", type=int, default=250, help="max iterations")
     parser.add_argument(
@@ -114,7 +114,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--pet_data_path",
         type=str,
-        default="/home/storage/prepared_data/phantom_data/nema_phantom_data/PET",
+        default="/home/storage/prepared_data/phantom_data/anthropomorphic_phantom_data/PET/phantom",
         help="pet data path",
     )
     parser.add_argument(
@@ -125,7 +125,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--spect_data_path",
         type=str,
-        default="/home/storage/prepared_data/phantom_data/nema_phantom_data/SPECT",
+        default="/home/storage/prepared_data/phantom_data/anthropomorphic_phantom_data/SPECT/phantom_140",
         help="spect data path",
     )
     parser.add_argument(
@@ -272,10 +272,13 @@ def prepare_data(args):
 
     # Set delta (smoothing parameter) if not provided
     if args.delta is None:
-        args.delta = min(
+        # set delta as 100th of the maximum value of the max image
+        # multiplied by the smallest weighting (alpha/beta)
+        args.delta = max(
             pet_data["initial_image"].max() / 1e2,
             spect_data["initial_image"].max() / 1e2,
-        )
+        ) * min(args.alpha, args.beta)
+            
 
     initial_estimates = EnhancedBlockDataContainer(
         pet_data["initial_image"], spect_data["initial_image"]
@@ -440,7 +443,11 @@ def get_data_fidelity(
     
     _, gauss = get_filters()
     if args.use_kappa:
-        kappa = get_kappa_squareds([pet_obj_funs, spect_obj_funs], [pet_data, spect_data], normalise=True)
+        kappa = get_kappa_squareds(
+            [pet_obj_funs, spect_obj_funs], 
+            [pet_data["initial_image"], spect_data["initial_image"]],
+            normalise=True
+        )
         for kappa_image in kappa.containers:
             gauss.apply(kappa_image)
         all_funs = pet_obj_funs + spect_obj_funs
@@ -452,7 +459,7 @@ def get_data_fidelity(
     return all_funs, s_inv, kappa
 
 
-def get_kappa_squareds(obj_funs_list, datas_list, normalise=False):
+def get_kappa_squareds(obj_funs_list, image_list, normalise=False):
     """
     Compute the kappa squared images for each objective function.
 
@@ -460,9 +467,9 @@ def get_kappa_squareds(obj_funs_list, datas_list, normalise=False):
         kappa_squareds: List of kappa squared images.
     """
     kappa_squareds = []
-    for obj_funs, datas in zip(obj_funs_list, datas_list):
+    for obj_funs, image in zip(obj_funs_list, image_list):
         kappa_squareds.append(
-            compute_kappa_squared_image_from_partitioned_objective(obj_funs, datas, normalise)
+            compute_kappa_squared_image_from_partitioned_objective(obj_funs, image, normalise)
         )
     return EnhancedBlockDataContainer(*kappa_squareds)
 
@@ -590,12 +597,12 @@ def main() -> None:
 
     # Redirect messages if needed.
     msg = MessageRedirector()
-        
-    save_args(args, "args.csv")
 
     # Data preparation.
     ct, pet_data, spect_data, initial_estimates = prepare_data(args)
 
+    save_args(args, "args.csv")
+    
     # Set up resampling operators.
     spect2pet = get_resampling_operators(args, pet_data, spect_data)
     
