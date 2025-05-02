@@ -51,7 +51,7 @@ class SaveGradientUpdateCallback(Callback):
             for i, el in enumerate(algo.gradient_update.containers):
                 el.write(f"{self.filename}_{i}_{algo.iteration}.hv")
 
-class PrintObjectiveCallback(callbacks.Callback):
+class PrintObjectiveCallback(Callback):
     
     def __call__(self, algo):
         if algo.iteration % algo.update_objective_interval == 0:

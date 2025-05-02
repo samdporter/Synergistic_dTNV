@@ -157,51 +157,36 @@ class Jacobian(Operator):
             res =  np.stack(adjoint_list, axis=-1)
         return res
 
+    # --- Jacobian.sensitivity ------------------------------------------
     def sensitivity(self, images):
         """
-        Compute an approximation of J(1) for a 3D image, yielding a sensitivity field
-        of shape (z, y, x, n_mod, 3), where the last dimension corresponds to the
-        spatial derivative components [1/v_0, 1/v_1, 1/v_2].
-
-        Each voxel's sensitivity vector is given by:
-            [1/v_0, 1/v_1, 1/v_2],
-        which is appropriate since a finite-difference approximation of a constant
-        would yield these directional scaling factors. This properly normalizes the 
-        Jacobian operator in the Hessian approximation H(z) ~ B^T J^T f''(B J(x)) B J(1).
-
-        Parameters:
-        images (np.ndarray or torch.Tensor): Array of shape (z, y, x, n_mod).
-
-        Returns:
-        np.ndarray or torch.Tensor: Sensitivity image with shape (z, y, x, n_mod, 3).
+        Return [√f_x/v_x, √f_y/v_y, √f_z/v_z]   with f_k = 2 for fwd/bwd,
+        f_k = 1 for central.  Keeps geometry *and* stencil together.
         """
-        spatial_shape = images.shape[:-1]  # (z, y, x)
-        n_mod = images.shape[-1]
-        dims = 3  # number of spatial dimensions for a 3D image
-
+        fx, fy, fz = (2.0, 2.0, 2.0) if self.method != 'central' else (1.0, 1.0, 1.0)
+        vs = self.voxel_sizes
         if self.gpu:
-            # Ensure we are operating on the GPU
-            device = images.device if isinstance(images, torch.Tensor) else torch.device("cuda")
-            # Create a ones tensor with an extra dimension for the gradient directions.
-            S = torch.ones((*spatial_shape, n_mod, dims), device=device)
-            for i in range(dims):
-                if self.voxel_sizes[i] != 1.0:
-                    S[..., i] /= self.voxel_sizes[i]
+            S = torch.ones((*images.shape, 3), device=images.device)
+            S[..., 0].mul_((fx**0.5)/vs[0])
+            S[..., 1].mul_((fy**0.5)/vs[1])
+            S[..., 2].mul_((fz**0.5)/vs[2])
             return S
         else:
-            # CPU version using numpy
-            S = np.ones((*spatial_shape, n_mod, dims))
-            for i in range(dims):
-                if self.voxel_sizes[i] != 1.0:
-                    S[..., i] /= self.voxel_sizes[i]
+            S = np.ones((*images.shape, 3))
+            S[..., 0] *= (fx**0.5)/vs[0]
+            S[..., 1] *= (fy**0.5)/vs[1]
+            S[..., 2] *= (fz**0.5)/vs[2]
             return S
-
-                   
-                
-                      
-
         
-        
+    # --- Jacobian.calculate_norm ---------------------------------------
+    def calculate_norm(self):
+        """‖J‖₂ for the chosen stencil."""
+        if not hasattr(self, '_norm'):
+            fx, fy, fz = (2.0, 2.0, 2.0) if self.method != 'central' else (1.0, 1.0, 1.0)
+            vx, vy, vz = self.voxel_sizes
+            self._norm = 2.0 * np.sqrt(fx/vx**2 + fy/vy**2 + fz/vz**2)
+        return self._norm
+
        
        
 class Gradient(Operator):
@@ -286,6 +271,15 @@ class Gradient(Operator):
             # Right boundary: Set last slice of out to the negative of the penultimate slice of x
             out.select(direction, -1).copy_(-x.select(direction, -2))
         return out
+    
+    def calculate_norm(self):
+        """Spectral norm of the 3-D finite-difference gradient."""
+        # cache if geometry is immutable
+        if not hasattr(self, '_norm') or self._norm is None:
+            vs = self.voxel_sizes
+            # 2 * sqrt(1/vx^2 + 1/vy^2 + 1/vz^2)
+            self._norm = 2.0 * np.sqrt(sum(1.0/(v**2) for v in vs))
+        return self._norm
     
 class DirectionalGradient(Operator):
 

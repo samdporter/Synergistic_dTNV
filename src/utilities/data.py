@@ -8,7 +8,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-
 def create_spect_uniform_image(sinogram, xy=None, origin=None):
     """
     Create a uniform image for SPECT data based on the sinogram dimensions.
@@ -137,7 +136,7 @@ def get_pet_data_multiple_bed_pos(path: str, suffixes: List[str], tof=False) -> 
         raise RuntimeError("Unable to load PET template image.") from e_template
 
     # Try to load the initial image.
-    initial_img_path = os.path.join(path, f"initial_image.hv")
+    initial_img_path = os.path.join(path, tof_str, f"initial_image.hv")
     try:
         pet_data["initial_image"] = ImageData(initial_img_path).maximum(0)
     except Exception as e_initial:
@@ -166,6 +165,12 @@ def get_pet_data_multiple_bed_pos(path: str, suffixes: List[str], tof=False) -> 
         )
         bed_data["template_image"] = ImageData(
             os.path.join(path, f"template_image{suffix}.hv")
+        )
+        bed_data["initial_image"] = ImageData(
+            os.path.join(path, tof_str, f"initial_image{suffix}.hv")
+        ).maximum(0)
+        bed_data["attenuation"] = ImageData(
+            os.path.join(path, f"umap{suffix}.hv")
         )
 
         pet_data["bed_positions"][suffix] = bed_data

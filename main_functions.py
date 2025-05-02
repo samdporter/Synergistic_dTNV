@@ -31,7 +31,6 @@ def attach_prior_hessian(prior, epsilon = 0) -> None:
         ret = self.function.operator.adjoint(
             self.function.function.inv_hessian_diag(
                 self.function.operator.direct(x),
-                epsilon=epsilon
             )
         )
         if out is not None:

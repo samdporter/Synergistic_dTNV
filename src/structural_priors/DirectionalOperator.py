@@ -13,8 +13,11 @@ class DirectionalOperator(LinearOperator):
 
         self.xi = self.anatomical_gradient/(self.anatomical_gradient.pnorm().power(2)+eta**2).sqrt()
 
+        self.calculate_norm = lambda _: 1
+
         super(DirectionalOperator, self).__init__(domain_geometry=geometry,
                                        range_geometry=geometry,)
+
         
     def direct(self, x, out=None):
 

@@ -229,32 +229,57 @@ class ImageCombineOperator(LinearOperator):
 
     @staticmethod
     def combine_images(
-        reference, images: BlockDataContainer,
+        reference: ImageData,
+        images: BlockDataContainer,
+        sens_images: BlockDataContainer = None,
+        weight_overlap: bool = False,
     ):
         """
-        Combines several images into one image according to the reference.
-        
-        Parameters:
-            reference: The reference image (template).
-            images: List of images to combine.
-            weight_overlap: If True, adjust for overlapping regions. Default is False (ignore weighting).
-        
-        Returns:
-            combined_image: The combined image.
+        Combines images onto `reference`. If weight_overlap=True, then:
+        - overlap mask M = (coverage_count ≥ 2)
+        - num = ∑_i [S_i · f_i],  den = ∑_i [S_i]
+        - out = M*(num/den) + (1−M)*∑_i[f_i]
+        Else does plain ∑_i[f_i].
         """
-        if not all(img.voxel_sizes() == images.containers[0].voxel_sizes() for img in images.containers):
-            raise ValueError("All images must have the same voxel size as the reference")
-        if ImageCombineOperator.get_combined_length_voxels(images) != reference.dimensions()[0]:
-            raise ValueError("Combined image length and reference dimensions do not match.")
+        # zoom all images
+        zoomed_imgs  = [img.zoom_image_as_template(reference)
+                        for img in images.containers]
 
-        zoomed_images = [img.zoom_image_as_template(reference) for img in images.containers]
-        combined_image = reference.get_uniform_copy(0)
+        if not weight_overlap:
+            out = reference.get_uniform_copy(0)
+            for z in zoomed_imgs:
+                out += z
+            return out
 
-        # Simply sum the zoomed images
-        for img in zoomed_images:
-            combined_image += img
+        # 1) build coverage masks (1 inside each img's FOV, 0 outside)
+        zoomed_masks = [
+            img.get_uniform_copy(1).zoom_image_as_template(reference)
+            for img in images.containers
+        ]
+        cov_arrs = [m.as_array() for m in zoomed_masks]
+        coverage = sum(cov_arrs)                  # integer count
+        overlap = (coverage >= 2)                 # boolean mask
 
-        return combined_image
+        # 2) zoom sensitivities and pull raw arrays
+        zoomed_sens = [
+            s.zoom_image_as_template(reference)
+            for s in sens_images.containers
+        ]
+        img_arrs  = [z.as_array() for z in zoomed_imgs]
+        sens_arrs = [s.as_array() for s in zoomed_sens]
+
+        # 3) numerator, denominator, simple sum
+        num    = sum(f*s for f, s in zip(img_arrs, sens_arrs))  # ∑ S_i·f_i
+        den    = sum(sens_arrs)                                 # ∑ S_i
+        simple = sum(img_arrs)                                  # ∑ f_i
+
+        # 4) merge
+        combined = np.where(overlap, num/den, simple)
+
+        out = reference.get_uniform_copy(0)
+        out.fill(combined)
+        return out
+
 
     @staticmethod
     def retrieve_original_images(combined_image, original_references):

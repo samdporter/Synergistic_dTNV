@@ -58,7 +58,8 @@ class WeightedVectorialTotalVariation(Function):
     """
 
     def __init__(self, geometry, weights, delta, smoothing='fair', norm = 'nuclear', 
-                 gpu=True, anatomical=None, stable = True, tail_singular_values=None):
+                 gpu=True, anatomical=None, stable = True, tail_singular_values=None,
+                 hessian='diagonal'):
         """
         Initializes the WeightedVectorialTotalVariation class.
         """        
@@ -71,6 +72,7 @@ class WeightedVectorialTotalVariation(Function):
             gpu=gpu, numpy_out=not gpu,
             method="central",)
         self.smoothing = smoothing
+        self.hessian = hessian
 
         self.bdc2a = BlockDataContainerToArray(geometry, gpu=gpu)
         self.weights = self.bdc2a.direct(weights)
@@ -132,7 +134,7 @@ class WeightedVectorialTotalVariation(Function):
         else:
             return ret
         
-    def hessian_diag_arr(self, x):
+    def _scalar_upper_hessian_diag_arr(self, x):
         
         # Expand weights for proper broadcasting.
         if hasattr(self.weights, "unsqueeze"):
@@ -142,57 +144,73 @@ class WeightedVectorialTotalVariation(Function):
         
         x_arr = self.bdc2a.direct(x)
         # Compute u = weights * jacobian.direct(bdc2a.direct(x))
-        u = weights * self.jacobian.direct(x_arr) * self.jacobian.sensitivity(x_arr)
+        u = weights * self.jacobian.direct(x_arr)
         # Compute the diagonal Hessian approximation for vtv evaluated at u.
         vtv_diag = self.vtv.hessian_diag(u)
         # Backproject the diagonal using the adjoints.
         return self.jacobian.adjoint(vtv_diag).abs()
+    
+    # --- WeightedVectorialTotalVariation: Hessian diagonal -------------
+    def _hess_diag_core(self, x_arr):
+        sens   = self.jacobian.sensitivity(x_arr)          # (..., m, 3)
+        s2     = sens.pow(2) if self.gpu else sens**2
+
+        w      = self.weights.unsqueeze(-1)                # (..., m, 1)
+        u      = w * self.jacobian.direct(x_arr)
+        d2phi  = self.vtv.hessian_diag(u)                  # (..., m, 3)
+
+        diag   = (d2phi * s2).sum(dim=-1) if self.gpu \
+                else (d2phi * s2).sum(axis=-1)
+        return diag.abs()
+    
+    def _scalar_upper_hessian_diag_arr(self, x):
+        # global Lipschitz constant of J
+        L = self.jacobian.calculate_norm() ** 2      # scalar
+        w = self.weights.unsqueeze(-1)
+        x_arr = self.bdc2a.direct(x)
+        u = w * self.jacobian.direct(x_arr)           # (..., m, 3)
+        vtv_diag = self.vtv.hessian_diag(u).sum(dim=-1 if self.gpu else -1)  # (..., m)
+        return (L * vtv_diag).abs()
+
+    def hessian_diag_arr(self, x):
+        if self.hessian == 'scalar':
+            return self._scalar_upper_hessian_diag_arr(x)
+        # default: diagonal
+        x_arr = self.bdc2a.direct(x)
+        return self._hess_diag_core(x_arr)
 
     def hessian_diag(self, x, out=None):
-        
-        vtv_diag_adj = self.hessian_diag_arr(x)
-        
-        if out is None:
-            return self.bdc2a.adjoint(
-                self.weights**2 * vtv_diag_adj
-            )
-        else:
-            out.fill(self.bdc2a.adjoint(
-                self.weights**2 * vtv_diag_adj
-            ))
-            return out         
-
-    def inv_hessian_diag(self, x, out=None, epsilon=0):
         """
-        Compute the inverse of the diagonal approximation of the Hessian.
+        Block‑data‑container version of the Hessian diagonal.
+        Result lives in the same geometry as `x`.
         """
-        vtv_diag_adj = self.hessian_diag_arr(x)
-        # Avoid division by zero
-        if self.gpu:
-            inv_hess_arr = torch.reciprocal(
-                vtv_diag_adj + epsilon,       
-            )
-            torch.nan_to_num(
-                inv_hess_arr, nan=0.0, neginf=0.0, posinf=0.0,
-                out=inv_hess_arr
-            )
-        else:
-            inv_hess_arr = np.reciprocal(
-                vtv_diag_adj + epsilon, 
-                where=vtv_diag_adj != 0
-            )
-            
-        if out is None:
-            return self.bdc2a.adjoint(
-                self.inv_weights**2 * inv_hess_arr
-            )
-        else:
-            out.fill(
-                self.bdc2a.adjoint(
-                    self.inv_weights**2 * inv_hess_arr
-                )
-            )
+        diag_arr = self.hessian_diag_arr(x)
+        # multiply by w² before mapping back
+        diag_arr = (self.weights ** 2) * diag_arr
+        result   = self.bdc2a.adjoint(diag_arr)
+        if out is not None:
+            out.fill(result)
             return out
+        return result
+
+    def inv_hessian_diag(self, x, out=None, epsilon=0.0):
+        """
+        Inverse of the diagonal Hessian approximation.
+        """
+        diag_arr = self.hessian_diag_arr(x) + epsilon
+        if self.gpu:
+            inv_arr = torch.reciprocal(diag_arr)
+            torch.nan_to_num(inv_arr, nan=0.0, posinf=0.0, neginf=0.0,
+                            out=inv_arr)
+        else:
+            inv_arr = np.reciprocal(diag_arr, where=diag_arr != 0)
+
+        inv_arr = (self.inv_weights ** 2) * inv_arr
+        result  = self.bdc2a.adjoint(inv_arr)
+        if out is not None:
+            out.fill(result)
+            return out
+        return result
         
     def proximal(self, x, tau, out=None):
         # expand weghts by one extra axis on end

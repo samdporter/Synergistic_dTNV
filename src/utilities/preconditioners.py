@@ -2,6 +2,7 @@ import numpy as np
 from cil.framework import BlockDataContainer
 from cil.optimisation.utilities import Preconditioner
 from cil.optimisation.functions import ScaledFunction
+from sirf.STIR import SeparableGaussianImageFilter
 
 class ConstantPreconditioner(Preconditioner):
     """Constant preconditioner."""
@@ -17,7 +18,8 @@ class ConstantPreconditioner(Preconditioner):
 
 class PreconditionerWithInterval(Preconditioner):
     """Preconditioner with support for update intervals and freezing behavior."""
-    def __init__(self, update_interval=1, freeze_iter=np.inf):
+    def __init__(self, update_interval=1, 
+                 freeze_iter=np.inf):
         self.update_interval = update_interval
         self.freeze_iter = freeze_iter
         self.freeze = None
@@ -50,9 +52,14 @@ class BSREMPreconditioner(PreconditionerWithInterval):
     """Preconditioner for BSREM."""
     def __init__(self, s_inv, update_interval=1, 
                  freeze_iter=np.inf, epsilon=None,
-                 max_vals=None):
+                 max_vals=None, smooth=True):
         super().__init__(update_interval, freeze_iter)
         self.s_inv = s_inv
+        if smooth:
+            self.gaussian = SeparableGaussianImageFilter()
+            self.gaussian.set_fwhms((10,10,10))
+        else:
+            self.gaussian = None
         if epsilon is None:
             epsilon = s_inv.max() * 1e-10
         self.epsilon = epsilon
@@ -63,9 +70,17 @@ class BSREMPreconditioner(PreconditionerWithInterval):
             out = algorithm.solution.copy()
         x = algorithm.x
         if self.max_vals is not None:
-            for i, el in enumerate(out.containers):
-                el = el.minimum(self.max_vals[i])
-                x.containers[i].fill(el)
+            if isinstance(x, BlockDataContainer):
+                for i, el in enumerate(out.containers):
+                    el = el.minimum(self.max_vals[i])
+                    if self.gaussian is not None:
+                        self.gaussian.apply(el)
+                    x.containers[i].fill(el)
+            else:
+                x = x.minimum(self.max_vals)
+                if self.gaussian is not None:
+                    self.gaussian.apply(x)
+                
         if out is None:
             return (x + self.epsilon) * self.s_inv 
         out.fill((x + self.epsilon) * self.s_inv)
@@ -109,8 +124,27 @@ class HarmonicMeanPreconditioner(PreconditionerWithInterval):
         b = self.preconds[1].compute_preconditioner(algorithm)
         out.fill(2 * a * b / (a + b + self.epsilon))
         return out
+    
+class ClampedHarmonicMeanPreconditioner(PreconditionerWithInterval):
+    """
+    Preconditioner that combines two preconditioners using a Clamped harmonic mean.
+    This is where the maximum of the mean cannot be greater than the maximum of each preconditioner.
+    """
+    def __init__(self, preconds, update_interval=np.inf, freeze_iter=np.inf, epsilon=1e-6):
+        super().__init__(update_interval, freeze_iter)
+        self.preconds = preconds
+        self.epsilon = epsilon
 
-
+    def compute_preconditioner(self, algorithm, out=None):
+        a = self.preconds[0].compute_preconditioner(algorithm)
+        b = self.preconds[1].compute_preconditioner(algorithm)
+        mean = 2 * a * b / (a + b + self.epsilon)
+        mean.minimum(a, out=mean)
+        mean.minimum(b, out=mean)
+        if out is None:
+            return mean
+        out.fill(mean)
+        return out
 class MeanPreconditioner(PreconditionerWithInterval):
     """Preconditioner that combines two preconditioners using a simple mean."""
     def __init__(self, preconds, update_interval=np.inf, freeze_iter=np.inf):
@@ -125,6 +159,25 @@ class MeanPreconditioner(PreconditionerWithInterval):
         out.fill((a + b) / 2)
         return out
 
+class ClampedMeanPreconditioner(PreconditionerWithInterval):
+    """
+    Preconditioner that combines two preconditioners using a Clamped mean.
+    This is where the maximum of the mean cannot be greater than the maximum of each preconditioner.
+    """
+    def __init__(self, preconds, update_interval=np.inf, freeze_iter=np.inf):
+        super().__init__(update_interval, freeze_iter)
+        self.preconds = preconds
+
+    def compute_preconditioner(self, algorithm, out=None):
+        a = self.preconds[0].compute_preconditioner(algorithm)
+        b = self.preconds[1].compute_preconditioner(algorithm)
+        mean = (a + b) / 2
+        mean.minimum(a, out=mean)
+        mean.minimum(b, out=mean)
+        if out is None:
+            return mean
+        out.fill(mean)
+        return out
 
 class IdentityPreconditioner(PreconditionerWithInterval):
     """Identity preconditioner."""

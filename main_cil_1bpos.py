@@ -73,7 +73,7 @@ def parse_arguments() -> argparse.Namespace:
         "--num_subsets", type=str, default="9,12", help="number of subsets"
     )
     parser.add_argument("--no_prior", action="store_true", help="no prior")
-    parser.add_argument("--num_epochs", type=int, default=500, help="number of epochs")
+    parser.add_argument("--num_epochs", type=int, default=50, help="number of epochs")
     parser.add_argument("--use_kappa", action="store_true", help="use kappa")
     parser.add_argument(
         "--initial_step_size", type=float, default=0.1, help="initial step size"

@@ -15,6 +15,9 @@ from sirf.STIR import (
     ImageData,
     AcquisitionData,
     MessageRedirector,
+    KOSMAPOSLReconstructor,
+    make_Poisson_loglikelihood,
+    AcquisitionModelUsingParallelproj
 )
 from sirf.Reg import NiftiImageData3DDisplacement
 from sirf.contrib.partitioner import partitioner
@@ -55,7 +58,7 @@ from cil.optimisation.algorithms import ISTA
 from cil.optimisation.utilities import Sampler, StepSizeRule
 
 try:
-    from .main_functions import *
+    from ..main_functions import *
 except:
     from main_functions import *
 
@@ -73,7 +76,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--beta", type=float, default=1, help="beta")
     parser.add_argument("--delta", type=float, default=None, help="delta")
     parser.add_argument(
-        "--num_subsets", type=str, default="9,12", help="number of subsets"
+        "--num_subsets", type=str, default=9, help="number of subsets"
     )
     parser.add_argument("--no_prior", action="store_true", help="no prior")
     parser.add_argument("--num_epochs", type=int, default=30, help="number of epochs")
@@ -187,6 +190,7 @@ from utilities.callbacks import (
     SaveObjectiveCallback,
     SavePreconditionerCallback,
 )
+from KEM.kem import KernelOperator
 from utilities.nifty import NiftyResampleOperator
 from utilities.sirf import (
     get_block_objective,
@@ -252,6 +256,13 @@ def save_args(args, output_filename):
     for key, value in vars(args).items():
         logging.info(f"{key}: {value}")
     logging.info(f"Arguments saved to {os.path.join(args.output_path, output_filename)}")
+
+def save_images(output_alpha, output_x, out_dir, out_suffix=""):
+    """
+    Save the reconstructed images to disk.
+    """
+    output_alpha.write(os.path.join(out_dir, "reconstruction_alpha" + out_suffix))
+    output_x.write(os.path.join(out_dir, "reconstruction_x" + out_suffix))
         
         
 def prepare_data(args):
@@ -382,76 +393,9 @@ def get_shift_operator(args, pet_data):
         
     return uncombine_op, unshift_ops, choose_ops
 
-
-def get_resampling_operators(
-    args, pet_data, spect_data,
-):
-    """
-    Set up resampling operators for SPECT images to PET images.
-
-    Returns:
-        spect2ct, zero_spect2ct operators.
-    """
-    
-    spect2pet_nonrigid = NiftyResampleOperator(
-        pet_data["initial_image"],
-        spect_data["initial_image"],
-        NiftiImageData3DDisplacement(
-            os.path.join(args.spect_data_path, "spect2pet.nii")
-        ),
-    )
-    
-    return spect2pet_nonrigid
-
-def get_prior(
-    args, umap, pet_data, spect_data,
-    initial_estimates, spect2pet,
-    kappas=None,
-):
-    """
-    Set up the prior function for image reconstruction.
-
-    Returns:
-        prior: The constructed prior function.
-        bo: The block operator used within the prior.
-    """
-    bo = BlockOperator(
-        IdentityOperator(pet_data["initial_image"]),  # pet2pet
-        ZeroOperator(spect_data["initial_image"], pet_data["initial_image"]),  # zero_spect2pet
-        ZeroOperator(pet_data["initial_image"]),  # zero_pet2pet
-        spect2pet,  # spect2pet
-        shape=(2, 2),
-    )
-
-    if kappas is not None:
-        for i, kappa in enumerate(kappas.containers):
-            logging.info(f"Writing kappa {i} with max {kappa.max()}")
-            kappa.write(os.path.join(args.output_path, f"kappa_{i}.hv"))
-        kappas = bo.direct(kappas)
-    else:
-        kappas = EnhancedBlockDataContainer(
-            pet_data["initial_image"].get_uniform_copy(1),
-            spect_data["initial_image"].get_uniform_copy(1),
-        )
-        kappas = bo.direct(kappas)
-    for i, (b, el) in enumerate(zip([args.alpha, args.beta], kappas.containers)):
-        kappas.containers[i].fill(b * el)
-
-    vtv = WeightedVectorialTotalVariation(
-        bo.direct(initial_estimates),
-        kappas,
-        args.delta,
-        anatomical=umap,
-        gpu=not args.no_gpu,
-        stable=False,
-        tail_singular_values=args.tail_singular_values, 
-    )
-    prior = OperatorCompositionFunction(vtv, bo)
-    return prior
-
 def get_data_fidelity(
-    args, pet_data, spect_data,
-    get_pet_am, get_spect_am,
+    args, pet_data,
+    get_pet_am,
     num_subsets, uncombine_op,
     unshift_ops, choose_ops
 ):
@@ -467,7 +411,7 @@ def get_data_fidelity(
             pet_data['bed_positions'][suffix]["acquisition_data"],
             pet_data['bed_positions'][suffix]["additive"],
             pet_data['bed_positions'][suffix]["normalisation"],
-            num_batches=num_subsets[0],
+            num_batches=args.num_subsets,
             mode="staggered",
             create_acq_model=get_pet_am,
         )[2]
@@ -479,17 +423,6 @@ def get_data_fidelity(
         for j in range(len(pet_dfs[i])):
             pet_dfs[i][j].set_up(pet_data['bed_positions'][suffix]["template_image"])
             
-    _, _, spect_dfs = partitioner.data_partition(
-        spect_data["acquisition_data"],
-        spect_data["additive"],
-        spect_data["acquisition_data"].get_uniform_copy(1),
-        num_batches=num_subsets[1],
-        mode="staggered",
-        create_acq_model=get_spect_am,
-    )
-
-    for obj_fun in spect_dfs:
-        obj_fun.set_up(spect_data['initial_image'])
         
     # Before we add all the complicated operators, we'll get the kappa images and sensitivity images
     pet_sens = [
@@ -499,10 +432,6 @@ def get_data_fidelity(
         for df, suffix in zip(pet_dfs, pet_data["bed_positions"])
     ]
     
-    spect_s_inv = get_s_inv_from_subset_objs(
-        spect_dfs, spect_data['initial_image']
-    )
-    
     # need to unshift and then combine pet images
     pet_sens_combined = uncombine_op.adjoint(
         EnhancedBlockDataContainer(*[
@@ -510,20 +439,16 @@ def get_data_fidelity(
             for unshift_op, s in zip(unshift_ops, pet_sens)
         ]) 
     )
-    pet_s_inv = pet_sens_combined.clone()
-    pet_sens_array = pet_sens_combined.as_array()
-    pet_s_inv.fill(
+    s_inv = pet_sens_combined.clone()
+    sens_array = pet_sens_combined.as_array()
+    s_inv.fill(
         np.reciprocal(
-            pet_sens_array,
-            where=pet_sens_array != 0,
+            sens_array,
+            where=sens_array != 0,
         )
     )
     cyl, _ = get_filters()
-    cyl.apply(pet_s_inv)
-    
-    s_inv = EnhancedBlockDataContainer(
-        pet_s_inv, spect_s_inv
-    )
+    cyl.apply(s_inv)
     
     # save the s_inv images
     for i, image in enumerate(s_inv.containers):
@@ -548,73 +473,41 @@ def get_data_fidelity(
     # Flatten the list so you obtain one function per subset per bed.
     pet_combined_dfs = [df for bed in pet_dfs for df in bed]
 
-    # Convert each operator into a final objective function.
-    pet_dfs = [
-        get_block_objective(
-            pet_data["initial_image"],
-            spect_data["initial_image"],
-            df,
-            order=0,
-        )
-        for df in pet_combined_dfs  
-    ]
- 
-    
-    spect_dfs = [
-        get_block_objective(
-            spect_data["initial_image"],
-            pet_data["initial_image"],
-            obj_fun,
-            order=1,
-        )
-        for obj_fun in spect_dfs
-    ]
-
-    all_funs = pet_dfs + spect_dfs
+    all_funs = pet_combined_dfs
 
     return all_funs, s_inv, None
 
-
-def get_preconditioners(
-    args: argparse.Namespace,
-    s_inv: Any,
-    all_funs: List[Any],
-    update_interval: int,
-    prior: Any, initial_estimates: EnhancedBlockDataContainer,
-) -> Any:
+def get_default_hyperparams(args):
     """
-    Set up the preconditioners.
-
-    Returns:
-        The combined preconditioner.
+    Return a dictionary of default hyperparameters for the kernel operator.
     """
-    
-    max_vals = [el.max() for el in initial_estimates.containers]
-    epsilon = min([el.max() for el in initial_estimates.containers]) * 1e-3
-    
-    bsrem_precond = BSREMPreconditioner(
-        s_inv, 1, np.inf, 
-        epsilon=epsilon,
-        max_vals=max_vals,
-        smooth=True,
+    hyperparams = {
+        "num_neighbours": args.num_neighbours,
+        "num_non_zero_features": args.num_non_zero_features,
+        "sigma_m": args.sigma_m,
+        "sigma_p": args.sigma_p,
+        "sigma_dm": args.sigma_dm,
+        "sigma_dp": args.sigma_dp,
+        "only_2D": args.only_2D,
+        "hybrid": args.hybrid,
+    }
+    return hyperparams
+
+def get_kernel_operator(args, guide_image, template_image, template_sinogram, hyperparams):
+        
+    K = KernelOperator(
+        template_image,
+        template_sinogram,
+        guide_image,
+        num_neighbours=hyperparams["num_neighbours"],
+        num_non_zero_features=hyperparams["num_non_zero_features"],
+        sigma_m=hyperparams["sigma_m"],
+        sigma_p=hyperparams["sigma_p"],
+        sigma_dm=hyperparams["sigma_dm"],
+        sigma_dp=hyperparams["sigma_dp"],
+        only_2D=hyperparams["only_2D"],
+        hybrid=hyperparams["hybrid"]
     )
-    if prior is None:
-        return bsrem_precond
-    
-    prior_precond = ImageFunctionPreconditioner(
-        prior.inv_hessian_diag, 1., 
-        update_interval, 
-        freeze_iter=np.inf,
-        epsilon=epsilon,
-    )
-    
-    precond = ClampedHarmonicMeanPreconditioner(
-        [bsrem_precond, prior_precond],
-        update_interval=update_interval,
-        freeze_iter=len(all_funs) * 10,
-    )
-    
-    return precond
 
 def get_probabilities(args, num_subsets, update_interval):
     pet_probs = [1 / update_interval] * num_subsets[0] * 2
@@ -631,7 +524,7 @@ def get_callbacks(args, update_interval: int) -> List[Any]:
         A list of callback objects.
     """
     return [
-        SaveImageCallback(os.path.join(args.output_path, "image"), update_interval),
+        SaveImageCallback(os.path.join(args.output_path, "alpha"), update_interval),
         SaveGradientUpdateCallback(os.path.join(args.output_path, "gradient"), update_interval),
         SavePreconditionerCallback(os.path.join(args.output_path, "preconditioner"), update_interval),
         PrintObjectiveCallback(update_interval),
@@ -704,10 +597,7 @@ def main() -> None:
     save_args(args, "args.csv")
 
     # Data preparation.
-    umap, pet_data, spect_data, initial_estimates = prepare_data(args)
-
-    # Set up resampling operators.
-    spect2pet = get_resampling_operators(args, pet_data, spect_data)
+    umap, pet_data, initial_estimates = prepare_data(args)
     
     get_pet_am_with_res = lambda: get_pet_am(
         not args.no_gpu,
@@ -715,52 +605,20 @@ def main() -> None:
     )
     
     uncombine_op, unshift_ops, choose_ops = get_shift_operator(args, pet_data)
-    
-    get_spect_am_with_res = lambda: get_spect_am(
-        spect_data,
-        res=args.spect_res,
-        keep_all_views_in_cache=args.stop_keep_all_views_in_cache,
-        gauss_fwhm=args.spect_gauss_fwhm,
-        attenuation=True,
-    )
+
 
     # Set up data fidelity functions.
     num_subsets = [int(i) for i in args.num_subsets.split(",")]
     all_funs, s_inv, kappa = get_data_fidelity(
         args, 
-        pet_data, spect_data, 
+        pet_data, 
         get_pet_am_with_res,
-        get_spect_am_with_res,
-        num_subsets,
         uncombine_op,
         unshift_ops,     
         choose_ops
     )
-    
-    if args.no_prior:
-        prior = None
-    else:
-        # Set up the prior.
-        prior = get_prior(
-                args, umap, pet_data, 
-                spect_data, initial_estimates, 
-                spect2pet, kappa
-                )
-        # Scale and attach Hessian to the prior if needed.
-        prior = -1 / len(all_funs) * prior
-        attach_prior_hessian(prior, epsilon=1e-3)
-
-        for i, fun in enumerate(all_funs):
-            all_funs[i] = SumFunction(fun, prior)
         
     update_interval = len(all_funs)
-    
-    # Set up preconditioners.
-    precond = get_preconditioners(
-        args, s_inv, all_funs, 
-        update_interval, prior,
-        initial_estimates
-    )
 
     probs = get_probabilities(args, num_subsets, update_interval)
     
