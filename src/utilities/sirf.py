@@ -1,9 +1,25 @@
-from cil.optimisation.operators import IdentityOperator, ZeroOperator, BlockOperator
+from cil.optimisation.operators import IdentityOperator, ZeroOperator, BlockOperator, LinearOperator
 from cil.optimisation.functions import KullbackLeibler, OperatorCompositionFunction
 from cil.framework import BlockDataContainer
 import numpy as np
 from sirf.contrib.partitioner import partitioner
 from sirf.STIR import TruncateToCylinderProcessor, SeparableGaussianImageFilter
+class ScalingOperator(LinearOperator):
+    def __init__(self, scale, domain_geometry):
+        super(ScalingOperator, self).__init__(domain_geometry=domain_geometry,
+                                    range_geometry=domain_geometry)
+        self.scale = scale
+    def direct(self, x, out=None):
+        """Scale the input image by a constant factor."""
+        if out is None:
+            return x * self.scale
+        else:
+            out.fill(x * self.scale)
+        return out
+        
+    def adjoint(self, x, out=None):
+        """Scale the input image by a constant factor."""
+        return self.direct(x, out=out)
 
 def set_up_partitioned_objectives(pet_data, spect_data, pet_obj_funs, spect_obj_funs):
 
@@ -17,13 +33,16 @@ def set_up_partitioned_objectives(pet_data, spect_data, pet_obj_funs, spect_obj_
     
     return pet_obj_funs, spect_obj_funs
 
-def get_block_objective(desired_image, other_image, obj_fun, order = 0):
+def get_block_objective(desired_image, other_image, obj_fun, scale=1, order = 0):
 
     """ Returns a block CIL objective function for the given SIRF objective function """
 
     # Set up zero operators
     o2d_zero = ZeroOperator(other_image, desired_image)
-    d2d_id = IdentityOperator(desired_image)
+    if scale == 1:
+        d2d_id = IdentityOperator(desired_image)
+    else:
+        d2d_id = ScalingOperator(scale, desired_image)
 
     if order == 0:
         return OperatorCompositionFunction(obj_fun, BlockOperator(d2d_id, o2d_zero, shape = (1,2)))

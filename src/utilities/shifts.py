@@ -32,13 +32,16 @@ class CouchShiftOperator(LinearOperator):
         """
         self.shift = shift
         # need to create range geometry by shifting the image
-        range_geometry = self.direct(image)
+        range_geometry = self.initialise_shift(image, out=None)
         super().__init__(
             domain_geometry=image, 
             range_geometry=range_geometry
         )
+        
+        self.unshifted_image = image.copy()
+        self.shifted_image = range_geometry.copy()
 
-    def direct(self, x, out=None):
+    def initialise_shift(self, x, out=None):
         """
         Apply the couch shift to the input image.
 
@@ -71,41 +74,27 @@ class CouchShiftOperator(LinearOperator):
         os.remove("tmp_shifted.hv")
 
         return out
+    
+    def direct(self, x, out=None):
+        
+        x_arr = x.as_array()
+        if out is not None:
+            out.fill(x_arr)
+            return out
+        else:
+            self.shifted_image.fill(x_arr)
+            return self.shifted_image           
+        
 
     def adjoint(self, x, out=None):
-        """
-        Revert the couch shift by setting the offset back to zero.
 
-        Parameters:
-        -----------
-        x : ImageData
-            The input image whose couch shift is to be reverted.
-        out : ImageData, optional
-            If provided, the result will be stored in this object. Otherwise, a new
-            ImageData object will be created.
-
-        Returns:
-        --------
-        ImageData
-            The image with the couch shift reverted.
-        """
-        # Write the input image to a temporary file
-        x.write("tmp_shifted.hv")
-
-        # Revert the 'first pixel offset (mm) [3]' to zero in the temporary file
-        self.modify_pixel_offset("tmp_shifted.hv", 0, 3)
-
-        # If `out` is provided, update it
+        x_arr = x.as_array()
         if out is not None:
-            out.read_from_file("tmp_shifted.hv")
-            
+            out.fill(x_arr)
+            return out
         else:
-            out = ImageData("tmp_shifted.hv")
-
-        # Delete the temporary file
-        os.remove("tmp_shifted.hv")
-
-        return out
+            self.unshifted_image.fill(x_arr)
+            return self.unshifted_image
 
     @staticmethod
     def modify_pixel_offset(file_path, new_offset, pixel_index):

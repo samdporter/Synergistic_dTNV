@@ -52,7 +52,7 @@ class BSREMPreconditioner(PreconditionerWithInterval):
     """Preconditioner for BSREM."""
     def __init__(self, s_inv, update_interval=1, 
                  freeze_iter=np.inf, epsilon=None,
-                 max_vals=None, smooth=True):
+                 max_vals=None, smooth=True,):
         super().__init__(update_interval, freeze_iter)
         self.s_inv = s_inv
         if smooth:
@@ -112,16 +112,24 @@ class ImageFunctionPreconditioner(PreconditionerWithInterval):
 
 class HarmonicMeanPreconditioner(PreconditionerWithInterval):
     """Preconditioner that combines two preconditioners using a harmonic mean."""
-    def __init__(self, preconds, update_interval=np.inf, freeze_iter=np.inf, epsilon=1e-6):
+    def __init__(self, preconds, 
+                 update_interval=np.inf, 
+                 freeze_iter=np.inf, epsilon=1e-6,
+                 scales =None
+                 ):
         super().__init__(update_interval, freeze_iter)
         self.preconds = preconds
         self.epsilon = epsilon
+        self.scales = scales
 
     def compute_preconditioner(self, algorithm, out=None):
         if out is None:
             out = algorithm.solution.copy()
         a = self.preconds[0].compute_preconditioner(algorithm)
         b = self.preconds[1].compute_preconditioner(algorithm)
+        if self.scales is not None:
+            a.sapyb(self.scales[0], a, 0) 
+            b.sapyb(self.scales[1], b, 0)
         out.fill(2 * a * b / (a + b + self.epsilon))
         return out
     
@@ -229,12 +237,13 @@ class SubsetKernelisedEMPreconditioner(SubsetPreconditioner):
     Can be used for OS(H)KEM with sequential sampler or for stochastic (H)KEM with random sampler.
     """
     def __init__(self, num_subsets, sensitivities, kernel, update_interval=1, freeze_iter=np.inf, epsilon=1e-6):
-        super().__init__(num_subsets, update_interval, freeze_iter)
+        super().__init__(num_subsets, update_interval, freeze_iter=np.inf)
         self.counter = 0
         self.sensitivities = sensitivities
         self.kernel = kernel
         self.epsilon = epsilon
         self.frozen_alpha = None
+        self.freeze_kernel_iter = freeze_iter
 
     def apply(self, algorithm, gradient, out=None):
         """
@@ -250,7 +259,7 @@ class SubsetKernelisedEMPreconditioner(SubsetPreconditioner):
     def compute_preconditioner(self, algorithm, out=None):
         # for the kernelised EM, we need to freeze the alpha after a certain number of iterations
         # rather than freezing the whole preconditioner
-        if algorithm.iteration >= self.freeze_iter:
+        if algorithm.iteration >= self.freeze_kernel_iter:
             self.kernel.freeze_alpha = True
         if out is None:
             out = algorithm.solution.copy()
@@ -260,3 +269,17 @@ class SubsetKernelisedEMPreconditioner(SubsetPreconditioner):
             adj = self.sensitivities[algorithm.f.data_passes_indices[-1][0]]
         out.fill(algorithm.x / (self.kernel.adjoint(adj) + self.epsilon) / self.num_subsets)
         return out
+
+class SubsetMultipleKernelisedEMPreconditioner(SubsetPreconditioner):
+    """
+    Subset preconditioner for (hybrid) kernelised EM.
+    Can be used for OS(H)KEM with sequential sampler or for stochastic (H)KEM with random sampler.
+    """
+    def __init__(self, num_subsets, sensitivities, kernels, update_interval=1, freeze_iter=np.inf, epsilon=1e-6):
+        super().__init__(num_subsets, update_interval, freeze_iter=np.inf)
+        self.counter = 0
+        self.sensitivities = sensitivities
+        self.kernels = kernels
+        self.epsilon = epsilon
+        self.frozen_alpha = None
+        self.freeze_kernel_iter = freeze_iter

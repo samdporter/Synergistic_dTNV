@@ -4,6 +4,8 @@ import logging
 from typing import List, Dict
 from sirf.STIR import AcquisitionData, ImageData
 
+AcquisitionData.set_storage_scheme("memory")
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )

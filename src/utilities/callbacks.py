@@ -96,7 +96,8 @@ class SavePreconditionerCallback(Callback):
         self.filename = filename
         
     def __call__(self, algo):
-        preconditioner = algo.preconditioner.compute_preconditioner(algo)
+        preconditioner = algo.solution.copy()
+        algo.preconditioner.compute_preconditioner(algo, preconditioner)
         if self.skip_iteration(algo):
             return
         if isinstance(preconditioner, ImageData):
