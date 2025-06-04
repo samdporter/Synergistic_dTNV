@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#main_cil_2bpos.py
 #%%
 import sys
 import os
@@ -9,6 +10,9 @@ import pandas as pd
 import shutil
 import logging
 from typing import Tuple, List, Any
+# import profiler
+import cProfile
+import pstats
 
 # SIRF imports
 from sirf.STIR import (
@@ -293,8 +297,8 @@ def prepare_data(args):
     # Set delta (smoothing parameter) if not provided
     if args.delta is None:
         args.delta = max(
-            pet_data["initial_image"].max() / 1e2,
-            spect_data["initial_image"].max() / 1e2,
+            pet_data["initial_image"].max() / 1e4,
+            spect_data["initial_image"].max() / 1e4,
         ) * min(args.alpha, args.beta)
 
     initial_estimates = EnhancedBlockDataContainer(
@@ -430,7 +434,7 @@ def get_prior(
         kappas = bo.direct(kappas)
     else:
         kappas = EnhancedBlockDataContainer(
-            pet_data["initial_image"].get_uniform_copy(1),
+            pet_data["initialwork_image"].get_uniform_copy(1),
             spect_data["initial_image"].get_uniform_copy(1),
         )
         kappas = bo.direct(kappas)
@@ -796,4 +800,17 @@ def main() -> None:
 
 #%%
 if __name__ == "__main__":
+
+    # set up profiler
+    profiler = cProfile.Profile()
+    profiler.enable()
+    
     main()
+
+    profiler.disable()
+    # Output results to a file
+    output_file = os.path.join(args.output_path, "profiling_results.txt")
+    with open(output_file, "w") as f:
+        ps = pstats.Stats(profiler, stream=f)
+        ps.strip_dirs().sort_stats("cumulative").print_stats()
+    logging.info(f"Profiling results saved to {output_file}")
