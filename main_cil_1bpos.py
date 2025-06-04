@@ -8,6 +8,8 @@ import pandas as pd
 import shutil
 import logging
 from typing import Tuple, List, Any
+import cProfile
+import pstats
 
 # SIRF imports
 from sirf.STIR import (
@@ -66,7 +68,7 @@ def parse_spect_res(x):
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="BSREM")
-    parser.add_argument("--alpha", type=float, default=1024, help="alpha")
+    parser.add_argument("--alpha", type=float, default=256, help="alpha")
     parser.add_argument("--beta", type=float, default=1, help="beta")
     parser.add_argument("--delta", type=float, default=None, help="delta")
     parser.add_argument(
@@ -78,7 +80,6 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--initial_step_size", type=float, default=0.1, help="initial step size"
     )
-    parser.add_argument("--iterations", type=int, default=250, help="max iterations")
     parser.add_argument(
         "--update_interval", type=int, default=None, help="update interval"
     )
@@ -108,19 +109,14 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
     "--spect_res",
     type=parse_spect_res,
-    default=(0.923, 0.03, False),
+    default=(1.78, 0.03, False),
     help="Tuple of (float, float, bool) for SPECT resolution and use flag (e.g. 0.0923,0.03,True)"
     )
     parser.add_argument(
         "--pet_data_path",
         type=str,
-        default="/home/storage/prepared_data/phantom_data/anthropomorphic_phantom_data/PET/phantom",
+        default="/home/storage/prepared_data/phantom_data/anthropomorphic_phantom_data/PET/phantom_short",
         help="pet data path",
-    )
-    parser.add_argument(
-        "--multiple_bed_position",
-        action="store_true",
-        help="multiple bed position",
     )
     parser.add_argument(
         "--spect_data_path",
@@ -170,6 +166,8 @@ from utilities.preconditioners import (
     ImageFunctionPreconditioner,
     HarmonicMeanPreconditioner,
     MeanPreconditioner,
+    ClampedHarmonicMeanPreconditioner,
+    ClampedMeanPreconditioner,
 )
 
 from utilities.callbacks import (
@@ -272,11 +270,11 @@ def prepare_data(args):
 
     # Set delta (smoothing parameter) if not provided
     if args.delta is None:
-        # set delta as 100th of the maximum value of the max image
+        # set delta as 10000 times smaller than maximum of the initial images
         # multiplied by the smallest weighting (alpha/beta)
         args.delta = max(
-            pet_data["initial_image"].max() / 1e2,
-            spect_data["initial_image"].max() / 1e2,
+            pet_data["initial_image"].max() / 1e4,
+            spect_data["initial_image"].max() / 1e4,
         ) * min(args.alpha, args.beta)
             
 
@@ -459,7 +457,7 @@ def get_data_fidelity(
     return all_funs, s_inv, kappa
 
 
-def get_kappa_squareds(obj_funs_list, image_list, normalise=False):
+def get_kappa_squareds(obj_funs_list, image_list, normalise=True):
     """
     Compute the kappa squared images for each objective function.
 
@@ -471,6 +469,12 @@ def get_kappa_squareds(obj_funs_list, image_list, normalise=False):
         kappa_squareds.append(
             compute_kappa_squared_image_from_partitioned_objective(obj_funs, image, normalise)
         )
+        if normalise:
+            # find 95th percentile of kappa squared image
+            kappa_squared_array = kappa_squareds[-1].as_array()
+            normalising_factor = np.percentile(kappa_squareds[-1].as_array(), 95)
+            kappa_squareds[-1].fill(kappa_squared_array / normalising_factor)
+            
     return EnhancedBlockDataContainer(*kappa_squareds)
 
 
@@ -502,10 +506,11 @@ def get_preconditioners(
     prior_precond = ImageFunctionPreconditioner(
         prior.inv_hessian_diag, 1., 
         update_interval, 
+        epsilon=minmax_val * 1e-10,
         freeze_iter=np.inf,
     )
     
-    precond = HarmonicMeanPreconditioner(
+    precond = ClampedMeanPreconditioner(
         [bsrem_precond, prior_precond],
         update_interval=update_interval,
         freeze_iter=len(all_funs) * 10,
@@ -688,4 +693,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+
+    profiler = cProfile.Profile()
+    profiler.enable()
     main()
+    profiler.disable()
+
+    with open('profiling_results.txt', 'w') as f:
+        ps = pstats.Stats(profiler, stream=f)
+        ps.strip_dirs()                 # remove extraneous path info
+        ps.sort_stats('cumulative')     # sort by cumulative time
+        ps.print_stats(None)            # print *every* function

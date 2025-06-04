@@ -33,6 +33,23 @@ class SaveImageCallback(Callback):
         elif isinstance(algo.solution, BlockDataContainer):
             for i, el in enumerate(algo.solution.containers):
                 el.write(f"{self.filename}_{i}_{algo.iteration}.hv")
+
+class SaveKernelisedImageCallback(Callback):
+    """
+    Save the alpha image to disk.
+    """
+    def __init__(self, filename, interval, kernel_op,**kwargs):
+        super().__init__(interval, **kwargs)
+        self.filename = filename
+        self.kernel_op = kernel_op
+
+
+    def __call__(self, algo):
+        if algo.iteration % self.interval != 0:
+            return
+        # Save the alpha image
+        image = self.kernel_op.direct(algo.solution)
+        image.write(f"{self.filename}_{algo.iteration}.hv")
                 
 class SaveGradientUpdateCallback(Callback):
     """

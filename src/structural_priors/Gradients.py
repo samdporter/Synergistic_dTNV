@@ -3,6 +3,9 @@ from numba import njit, prange, jit
 import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def inner_product(x, y):
+    return torch.sum(x * y).item()
+
 class Operator():
 
     def __init__():
@@ -88,35 +91,44 @@ class CompositionOperator(Operator):
             res = op.adjoint(res)
         return res
 
-class Jacobian(Operator):
-    """ Jacobian operation with optional weighting """
-    def __init__(self, voxel_sizes=(1, 1, 1),
-                 bnd_cond='Neumann', method='forward',
-                 anatomical=None, numpy_out=True, gpu=False) -> None:
-        
+class Jacobian:
+    def __init__(self, voxel_sizes=(1, 1, 1), bnd_cond='Periodic', method='forward',
+                 anatomical=None, numpy_out=True, diagonal=False, both_directions=False,
+                 gpu=True):
+
         self.gpu = gpu
-        
         self.voxel_sizes = voxel_sizes
         self.method = method
-        
         self.numpy_out = numpy_out
         self.anatomical = anatomical
-        # check if anatomical is a list
+        self.diagonal = diagonal
+        self.both_directions = both_directions
+
         if isinstance(anatomical, list):
-            self.grad = [self._initialise_gradient(anatomical, voxel_sizes, method, bnd_cond, gpu) for anatomical in self.anatomical]
+            self.grad = [self._initialise_gradient(a, voxel_sizes, method, bnd_cond, gpu, diagonal, both_directions)
+                         for a in anatomical]
             print('Multiple anatomical images detected. This will fail if different number of images are passed to direct and adjoint methods')
         else:
-            self.grad = self._initialise_gradient(anatomical, voxel_sizes, method, bnd_cond, gpu)
+            self.grad = self._initialise_gradient(anatomical, voxel_sizes, method, bnd_cond, gpu, diagonal, both_directions)
 
-    def _initialise_gradient(self, anatomical, voxel_sizes, method, bnd_cond, gpu):
-
+    def _initialise_gradient(self, anatomical, voxel_sizes, method, bnd_cond, gpu, diagonal, both_directions):
         if anatomical is None:
-            return Gradient(voxel_sizes=voxel_sizes, method=method, bnd_cond=bnd_cond, gpu=gpu, numpy_out=False)
-        
+            return Gradient(voxel_sizes=voxel_sizes, method=method, bnd_cond=bnd_cond,
+                            gpu=gpu, numpy_out=False, diagonal=diagonal, both_directions=both_directions)
         if gpu:
             anatomical = torch.tensor(anatomical, device=device) if isinstance(anatomical, np.ndarray) else anatomical.to(device)
-       
-        return DirectionalGradient(anatomical, voxel_sizes=voxel_sizes, method=method, bnd_cond=bnd_cond, gpu=gpu, numpy_out=False)
+        return DirectionalGradient(
+            anatomical,
+            voxel_sizes=voxel_sizes,
+            method=method,
+            bnd_cond=bnd_cond,
+            diagonal=diagonal,
+            both_directions=both_directions,
+            gpu=gpu,
+            numpy_out=False
+        )
+
+
     
     def direct(self, images):
             
@@ -160,144 +172,178 @@ class Jacobian(Operator):
     # --- Jacobian.sensitivity ------------------------------------------
     def sensitivity(self, images):
         """
-        Return [√f_x/v_x, √f_y/v_y, √f_z/v_z]   with f_k = 2 for fwd/bwd,
-        f_k = 1 for central.  Keeps geometry *and* stencil together.
+        Return voxel-wise scaling factor for each gradient channel,
+        matching the stencil used in Gradient.
+        
+        For finite difference (f(x+h) - f(x))/h, the sensitivity is 1/h
+        where h is the physical step size: h = sqrt(Σ(shift_i * voxel_size_i)²)
+        
+        Output shape: (z, y, x, n_images, d)
         """
-        fx, fy, fz = (2.0, 2.0, 2.0) if self.method != 'central' else (1.0, 1.0, 1.0)
         vs = self.voxel_sizes
+
+        directions = [(1,0,0), (0,1,0), (0,0,1)]
+        if self.diagonal:
+            directions += [(1,1,0), (1,0,1), (0,1,1)]
+
+        modes = ['forward', 'backward'] if self.both_directions else [self.method]
+        n_channels = len(directions) * len(modes)
+
+        shape = (*images.shape[:-1], images.shape[-1], n_channels)
         if self.gpu:
-            S = torch.ones((*images.shape, 3), device=images.device)
-            S[..., 0].mul_((fx**0.5)/vs[0])
-            S[..., 1].mul_((fy**0.5)/vs[1])
-            S[..., 2].mul_((fz**0.5)/vs[2])
-            return S
+            S = torch.ones(shape, device=images.device)
         else:
-            S = np.ones((*images.shape, 3))
-            S[..., 0] *= (fx**0.5)/vs[0]
-            S[..., 1] *= (fy**0.5)/vs[1]
-            S[..., 2] *= (fz**0.5)/vs[2]
-            return S
+            S = np.ones(shape)
+
+        idx = 0
+        for shift in directions:
+            # Physical step size: Δℓ = sqrt(Σ(α_i * Δx_i)²)
+            physical_step = np.sqrt(sum((s * v)**2 for s, v in zip(shift, vs)))
+            
+            # Sensitivity is 1/Δℓ (inverse of step size)
+            scale = 1.0 / physical_step
+            
+            for _ in modes:
+                S[..., :, idx] *= scale
+                idx += 1
+
+        return S
         
     # --- Jacobian.calculate_norm ---------------------------------------
     def calculate_norm(self):
         """‖J‖₂ for the chosen stencil."""
         if not hasattr(self, '_norm'):
-            fx, fy, fz = (2.0, 2.0, 2.0) if self.method != 'central' else (1.0, 1.0, 1.0)
-            vx, vy, vz = self.voxel_sizes
-            self._norm = 2.0 * np.sqrt(fx/vx**2 + fy/vy**2 + fz/vz**2)
-        return self._norm
+            vs = self.voxel_sizes
+            directions = [(1,0,0), (0,1,0), (0,0,1)]
+            if self.diagonal:
+                directions += [(1,1,0), (1,0,1), (0,1,1)]
+            num_shifts = 2 if self.both_directions else 1
 
-       
-       
-class Gradient(Operator):
-    def __init__(self, voxel_sizes, method='forward', bnd_cond='Neumann', 
-                 numpy_out=False, gpu=False):
+            self._norm = 2.0 * np.sqrt(
+                sum(num_shifts * sum((s / v)**2 for s, v in zip(shift, vs)) for shift in directions)
+            )
+        return self._norm
+  
+class Gradient:
+    def __init__(self, voxel_sizes, method='forward', bnd_cond='Periodic', 
+                 numpy_out=False, gpu=True, diagonal=False, both_directions=False):
         self.voxel_sizes = voxel_sizes
         self.method = method
         self.bnd_cond = bnd_cond
         self.numpy_out = numpy_out
         self.gpu = gpu
+        self.diagonal = diagonal
+        self.both_directions = both_directions
 
-        if not gpu:
-            self.FD = CPUFiniteDifferenceOperator(self.voxel_sizes[0], direction=0, method=self.method, bnd_cond=bnd_cond)
+        self.directions = [(1,0,0), (0,1,0), (0,0,1)]
+        if self.diagonal:
+            self.directions += [(1,1,0), (1,0,1), (0,1,1)]
+            
+    def diff_along(self, x, shift, mode='forward'):
+        shift = torch.tensor(shift)
+        dims = (0, 1, 2)
+
+        if mode not in ('forward', 'backward'):
+            raise ValueError("Unsupported mode")
+
+        if self.bnd_cond == 'Periodic':
+            shift_amt = -shift if mode == 'forward' else shift
+            shifted = torch.roll(x, shifts=tuple(int(s.item()) for s in shift_amt), dims=dims)
+            return shifted - x if mode == 'forward' else x - shifted
+        elif self.bnd_cond == 'Neumann':
+            raise NotImplementedError("Neumann boundary condition not implemented for GPU mode.")
 
     def direct(self, x):
-        res = []
-        if self.gpu:
-            if not isinstance(x, torch.Tensor):
-                x = torch.tensor(x, device=device)
-            else:
-                x = x.to(device)
-            for i in range(x.ndim):
-                if self.method == 'forward':
-                    res.append(self.forward_diff(x, i))
-                elif self.method == 'backward':
-                    res.append(self.backward_diff(x, i))
-                elif self.method == 'central':
-                    res.append((self.forward_diff(x, i) + self.backward_diff(x, i)) / 2)
-                else:
-                    raise ValueError('Not implemented')
-                if self.voxel_sizes[i] != 1.0:
-                    res[-1] /= self.voxel_sizes[i]
-            result = torch.stack(res, dim=-1)
-            return result.cpu().numpy() if self.numpy_out else result
+        if not self.gpu:
+            raise NotImplementedError("CPU mode not supported in diagonal/both mode.")
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(x, device=device)
         else:
-            for i in range(x.ndim):
-                self.FD.direction = i
-                self.FD.voxel_size = self.voxel_sizes[i]
-                res.append(self.FD.direct(x))
-            return np.stack(res, axis=-1)
+            x = x.to(device)
+
+        results = []
+        for shift in self.directions:
+            modes = ['forward', 'backward'] if self.both_directions else [self.method]
+            for mode in modes:
+                out = self.diff_along(x, shift, mode)
+                vnorm = np.sqrt(sum((s * v)**2 for s, v in zip(shift, self.voxel_sizes)))
+                out /= vnorm
+                results.append(out)
+
+        result = torch.stack(results, dim=-1)
+        return result.cpu().numpy() if self.numpy_out else result
 
     def adjoint(self, x):
-        res = []
-        if self.gpu:
-            if not isinstance(x, torch.Tensor):
-                x = torch.tensor(x, device=device)
-            else:
-                x = x.to(device)
-            for i in range(x.size(-1)):
-                if self.method == 'forward':
-                    res.append(-self.backward_diff(x[..., i], i))
-                elif self.method == 'backward':
-                    res.append(-self.forward_diff(x[..., i], i))
-                elif self.method == 'central':
-                    res.append((-self.forward_diff(x[..., i], i) - self.backward_diff(x[..., i], i)) / 2)
-                else:
-                    raise ValueError('Not implemented')
-                if self.voxel_sizes[i] != 1.0:
-                    res[-1] /= self.voxel_sizes[i]
-            result = torch.stack(res, dim=-1).sum(dim=-1)
-            return result.cpu().numpy() if self.numpy_out else result
-        for i in range(x.shape[-1]):
-            self.FD.direction = i
-            self.FD.voxel_size = self.voxel_sizes[i]
-            res.append(self.FD.adjoint(x[..., i]))
-        return -sum(res)
+        if not self.gpu:
+            raise NotImplementedError("CPU mode not supported in diagonal/both mode.")
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(x, device=device)
+        else:
+            x = x.to(device)
 
-    def forward_diff(self, x, direction):
-        append_tensor = x.select(direction, 0 if self.bnd_cond == 'Periodic' else -1).unsqueeze(direction)
-        out = torch.diff(x, n=1, dim=direction, append=append_tensor)
-        if self.bnd_cond == 'Neumann':
-            out.select(direction, -1).zero_()
-        return out
+        result = torch.zeros_like(x[..., 0])
+        d_idx = 0
+        for shift in self.directions:
+            modes = ['forward', 'backward'] if self.both_directions else [self.method]
+            for mode in modes:
+                adj_mode = 'backward' if mode == 'forward' else 'forward'
+                comp = self.diff_along(x[..., d_idx], shift, adj_mode)
+                vnorm = np.sqrt(sum((s * v)**2 for s, v in zip(shift, self.voxel_sizes)))
+                result -= comp / vnorm
+                d_idx += 1
 
-    def backward_diff(self, x, direction):
-        flipped_x = x.flip(direction)
-        append_tensor = flipped_x.select(direction, 0 if self.bnd_cond == 'Periodic' else -1).unsqueeze(direction)
-        out = -torch.diff(flipped_x, n=1, dim=direction, append=append_tensor).flip(direction)
-        if self.bnd_cond == 'Neumann':
-            # Left boundary: Set first slice of out to the first slice of x
-            out.select(direction, 0).copy_(x.select(direction, 0))
-            # Right boundary: Set last slice of out to the negative of the penultimate slice of x
-            out.select(direction, -1).copy_(-x.select(direction, -2))
-        return out
-    
+        return result.cpu().numpy() if self.numpy_out else result
+
     def calculate_norm(self):
-        """Spectral norm of the 3-D finite-difference gradient."""
-        # cache if geometry is immutable
         if not hasattr(self, '_norm') or self._norm is None:
             vs = self.voxel_sizes
-            # 2 * sqrt(1/vx^2 + 1/vy^2 + 1/vz^2)
-            self._norm = 2.0 * np.sqrt(sum(1.0/(v**2) for v in vs))
+            shifts = self.directions
+            if self.both_directions:
+                shifts = shifts * 2
+            self._norm = 2.0 * np.sqrt(sum(sum((s / v)**2 for s, v in zip(shift, vs)) for shift in shifts))
         return self._norm
     
 class DirectionalGradient(Operator):
 
-    def __init__(self, anatomical, voxel_sizes, gamma=1, eta=1e-6,
+    def __init__(self, anatomical, voxel_sizes, gamma=1, eta=None,
                   method='forward', bnd_cond='Neumann', numpy_out=False,
-                  gpu=False) -> None:
+                  gpu=False, diagonal=False, both_directions=False
+                  ) -> None:
 
         self.anatomical = anatomical
         self.voxel_size = voxel_sizes
         self.gamma = gamma
-        self.eta = eta
         self.method = method
         self.bnd_cond = bnd_cond
         self.numpy_out = numpy_out
         self.gpu = gpu
-        self.gradient = Gradient(voxel_sizes=self.voxel_size, method=self.method, bnd_cond=self.bnd_cond, numpy_out=False, gpu=self.gpu)
-
+        self.gradient = Gradient(
+            voxel_sizes=self.voxel_size, 
+            method=self.method, 
+            bnd_cond=self.bnd_cond, 
+            numpy_out=False, gpu=self.gpu,
+            diagonal=diagonal,
+            both_directions=both_directions
+            )
         self.anatomical_grad = self.gradient.direct(self.anatomical)
+        if eta is None:
+            # make 1000 times smaller than the dynamic range of gradient
+            if torch is not None and isinstance(
+                self.anatomical_grad, 
+                torch.Tensor
+            ):
+                # Use tensor‐native max/min
+                max_val = self.anatomical_grad.max().item()
+                min_val = self.anatomical_grad.min().item()
+            else:
+                # Fallback to NumPy
+                arr = np.asarray(self.anatomical_grad)
+                max_val = arr.max()
+                min_val = arr.min()
+
+            self.eta = (max_val - min_val) / 100000
+        else:
+            self.eta = eta
 
         if gpu:
             self.directional_op = gpu_directional_op   
