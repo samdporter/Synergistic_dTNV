@@ -107,7 +107,10 @@ def run_kosmaposl(args, data, hyperparams, get_am):
     """
     
     am = get_am()
-
+    
+    if args.modality == "SPECT":
+        data["normalisation"] = data["acquisition_data"].get_uniform_copy(1)
+        
     am.set_acquisition_sensitivity(
         AcquisitionSensitivityModel(data["normalisation"])
     )
@@ -120,12 +123,24 @@ def run_kosmaposl(args, data, hyperparams, get_am):
     out_dir = os.path.join(args.out_path, args.out_suffix)
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
+        
+    if args.modality == "PET":
+        if args.guidance == "emission":
+            guidance = data["spect"]
+        else:
+            guidance = data["attenuation"]
+    else:
+        if args.guidance == "emission":
+            print("Emission guidance not available, using attenuation")
+            guidance = data["attenuation"]
+        else:
+            guidance = data["attenuation"]
 
     recon = KOSMAPOSLReconstructor()
     recon.set_objective_function(obj_fun)
     recon.set_num_subsets(args.num_subsets)
     recon.set_num_subiterations(args.num_subsets * args.num_epochs)
-    recon.set_anatomical_prior(data["spect"])
+    recon.set_anatomical_prior(guidance)
     recon.set_num_neighbours(hyperparams["num_neighbours"])
     recon.set_num_non_zero_features(hyperparams["num_non_zero_features"])
     recon.set_sigma_m(hyperparams["sigma_m"])
@@ -140,7 +155,7 @@ def run_kosmaposl(args, data, hyperparams, get_am):
 
     print("Setting up KOSMAPOSL reconstruction, please wait...")
     current_alpha = image.get_uniform_copy(1)
-    recon.set_up(current_alpha)
+    recon.set_up(current_alpha) 
     recon.set_current_estimate(current_alpha)
     recon.reconstruct(current_alpha)
 
@@ -170,9 +185,16 @@ def run_ista(args, data, hyperparams, get_am):
         obj.set_up(data["initial_image"])
 
     if args.modality == "PET":
-        guidance = data["spect"]
+        if args.guidance == "emission":
+            guidance = data["spect"]
+        else:
+            guidance = data["attenuation"]
     else:
-        guidance = data["attenuation"]
+        if args.guidance == "emission":
+            print("Emission guidance not available, using attenuation")
+            guidance = data["attenuation"]
+        else:
+            guidance = data["attenuation"]
 
     K = KernelOperator(
         data["initial_image"],
@@ -299,6 +321,12 @@ def parse_arguments():
         help="Modality to reconstruct."
     )
     parser.add_argument(
+        "--guidance",
+        choices=["emission", "attenuation"],
+        default="attenuation",
+        help="Guidance image to use."
+    )
+    parser.add_argument(
         "--method",
         choices=["kosmaposl", "ista"],
         default="ista",
@@ -350,7 +378,7 @@ def parse_arguments():
     parser.add_argument(
     "--spect_res",
     type=parse_spect_res,
-    default=(0.923, 0.03, False),
+    default=(1.22, 0.031, False),
     help="Tuple of (float, float, bool) for SPECT resolution and use flag (e.g. 0.0923,0.03,True)"
     )
     parser.add_argument(

@@ -113,8 +113,8 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
     "--spect_res",
-    #type=parse_spect_res,
-    #default=(0.923, 0.03, False),
+    type=parse_spect_res,
+    default=(2.1, 0.02, False),
     default=None,
     help="Tuple of (float, float, bool) for SPECT resolution and use flag (e.g. 0.0923,0.03,True)"
     )
