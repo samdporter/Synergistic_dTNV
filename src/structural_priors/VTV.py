@@ -1,3 +1,5 @@
+# VTV.py
+
 from cil.optimisation.functions import Function
 try:
     import torch
@@ -50,10 +52,7 @@ class WeightedVectorialTotalVariation(Function):
             gpu=True, anatomical=None, stable=True,
             diagonal = False, both_directions=False,
             tail_singular_values=None,
-            hessian='diagonal',
-            normalise_gradients=False,  # per-voxel L2
-            global_normalise_gradients=False,  # per-image L2
-            norm_eps=1e-12):
+            hessian='diagonal',):
         voxel_sizes = geometry.containers[0].voxel_sizes()
         if isinstance(anatomical, ImageData):
             anatomical = anatomical.as_array()
@@ -84,11 +83,6 @@ class WeightedVectorialTotalVariation(Function):
         else:
             self.inv_weights = np.reciprocal(self.weights, where=self.weights != 0)
 
-        # Normalization flags
-        self.normalise_gradients = normalise_gradients
-        self.global_normalise_gradients = global_normalise_gradients
-        self.norm_eps = norm_eps
-
         # Choose GPU or CPU backend for the actual vectorial TV
         if gpu:
             if tail_singular_values is not None:
@@ -103,42 +97,11 @@ class WeightedVectorialTotalVariation(Function):
                 raise ValueError("tail_singular_values is only implemented for GPU")
             self.vtv = CPUVectorialTotalVariation(delta, smoothing_function=smoothing)
 
-    def _normalize_per_voxel(self, J):
-        # J shape: (..., M, d)
-        # Compute L2 norm of each M×d block, then normalize
-        if self.gpu:
-            norms = torch.linalg.norm(J, dim=-1, keepdim=True)  # (..., M, 1)
-        else:
-            norms = np.linalg.norm(J, axis=-1, keepdims=True)   # (..., M, 1)
-
-        factor = norms / (norms + self.norm_eps)
-        return J / (norms + self.norm_eps) * factor
-
-    def _normalize_global(self, J):
-        # J shape: (..., M, d)
-        # Compute a single L2 over all voxels and directions, per modality
-        if self.gpu:
-            norm_factors = torch.sqrt((J ** 2).sum(dim=(0, 1, 2, -1))).clamp_min(self.norm_eps)
-            norm_factors = norm_factors.view(1, 1, 1, -1, 1)  # broadcast to (..., M, d)
-            return J / norm_factors, norm_factors
-        else:
-            norm_factors = np.linalg.norm(J, axis=(0, 1, 2, -1)).clip(min=self.norm_eps)
-            norm_factors = norm_factors.reshape((1, 1, 1, -1, 1))
-            return J / norm_factors, norm_factors
-
     def __call__(self, x):
         # 1) Pull x (BDC) → array/tensor of shape (..., M)
         x_arr = self.bdc2a.direct(x)                        # shape (nx, ny, nz, M)
         # 2) Compute the Jacobian: J_raw shape (nx, ny, nz, M, d)
-        J_raw = self.jacobian.direct(x_arr)
-
-        # 3) Optional gradient normalization
-        if self.global_normalise_gradients:
-            J, _ = self._normalize_global(J_raw)
-        elif self.normalise_gradients:
-            J = self._normalize_per_voxel(J_raw)
-        else:
-            J = J_raw
+        J = self.jacobian.direct(x_arr)
 
         # 4) Multiply by weights (shape (..., M) → expand to (..., M, 1))
         w = self.weights.unsqueeze(-1)                      # (..., M, 1)
@@ -150,13 +113,7 @@ class WeightedVectorialTotalVariation(Function):
     def call_no_sum(self, x):
         # Same as __call__, but returns the un-summed per‐voxel quantities
         x_arr = self.bdc2a.direct(x)
-        J_raw = self.jacobian.direct(x_arr)
-        if self.global_normalise_gradients:
-            J, _ = self._normalize_global(J_raw)
-        elif self.normalise_gradients:
-            J = self._normalize_per_voxel(J_raw)
-        else:
-            J = J_raw
+        J = self.jacobian.direct(x_arr)
 
         w = self.weights.unsqueeze(-1)
         U = w * J
@@ -167,17 +124,7 @@ class WeightedVectorialTotalVariation(Function):
         # 1) Pull x → array/tensor
         x_arr = self.bdc2a.direct(x)                        # (nx, ny, nz, M)
         # 2) Compute J_raw (nx, ny, nz, M, d)
-        J_raw = self.jacobian.direct(x_arr)
-
-        # 3) Normalize if needed
-        if self.global_normalise_gradients:
-            J, norm_factors = self._normalize_global(J_raw)
-        elif self.normalise_gradients:
-            norms = torch.linalg.norm(J_raw, dim=-1, keepdim=True).clamp_min(self.norm_eps) if self.gpu \
-                else np.linalg.norm(J_raw, axis=-1, keepdims=True).clip(min=self.norm_eps)
-            J = J_raw / norms
-        else:
-            J = J_raw
+        J = self.jacobian.direct(x_arr)
 
         # 4) Multiply by weights
         w = self.weights.unsqueeze(-1)          # (..., M, 1)
@@ -185,12 +132,6 @@ class WeightedVectorialTotalVariation(Function):
 
         # 5) Compute inner gradient: shape (..., M, d)
         inner = w * self.vtv.gradient(U)        # the vtv.gradient already accounts for smoothing etc.
-
-        # 6) Undo any normalization
-        if self.normalise_gradients:
-            inner = inner / norms
-        elif self.global_normalise_gradients:
-            inner = inner / norm_factors
 
         # 7) Push back to image‐space: J^* (−divergence)
         # In our code, Jacobian.adjoint performs exactly −divg
@@ -201,101 +142,114 @@ class WeightedVectorialTotalVariation(Function):
             return out
         return ret
 
-    def _hess_diag_core(self, x_arr):
-        # x_arr: (nx,ny,nz,M)
-        # We want diag(H) = diag( J^*  [D^2 \Phi / D\mathcal J^2]  J ).
-        # Steps:
-        #  a) Compute the “sensitivity” of J w.r.t x: sens = J’s Jacobian‐adjoint identity
-        #     In practice, sens = Jacobian.sensitivity(x_arr), which yields the per-voxel
-        #     “sum of squares of finite‐difference coefficients,” shape (nx,ny,nz,M).
-        sens = self.jacobian.sensitivity(x_arr)     # shape (nx,ny,nz,M)
-        #  b) Square it:
-        s2 = sens ** 2 if self.gpu else sens ** 2
+    def _preconditioner_weights_core(self, x_arr):
+        """
+        Core implementation to calculate the diagonal preconditioner weights
+        based on the corrected Hessian derivation.
+        """
+        # 1. Compute the Jacobian field, Jx.
+        #    We do not apply normalization here as the Hessian is for the unnormalized functional.
+        J_raw = self.jacobian.direct(x_arr)
 
-        #  c) Compute J_raw and normalize if needed
-        J_raw = self.jacobian.direct(x_arr)         # (nx,ny,nz,M,d)
-        if self.global_normalise_gradients:
-            J, norm_factors = self._normalize_global(J_raw)
-        elif self.normalise_gradients:
-            norms = torch.linalg.norm(J_raw, dim=-1, keepdim=True).clamp_min(self.norm_eps) if self.gpu \
-                else np.linalg.norm(J_raw, axis=-1, keepdims=True).clip(min=self.norm_eps)
-            J = J_raw / norms
-        else:
-            J = J_raw
+        # 2. Apply the data-fidelity weights. This becomes the input 'A' for the VTV function.
+        #    A = w * Jx
+        w = self.weights.unsqueeze(-1) if self.gpu else np.expand_dims(self.weights, -1)
+        A_field = w * J_raw
 
-        #  d) Build U = weights * J
-        w = self.weights.unsqueeze(-1)              # (..., M, 1)
-        U = w * J                                    # (..., M, d)
+        # 3. Call the backend to get the Hessian components from the SVD of A_field.
+        #    - hess_coeffs is h''(s_k)
+        #    - rank_one_fields is the collection of u_k v_k^T matrices for each k
+        hess_coeffs, rank_one_fields = self.vtv.hessian_components(A_field)
+        # hess_coeffs shape: (nx, ny, nz, r)
+        # rank_one_fields shape: (nx, ny, nz, r, M, d)
 
-        #  e) Ask VTV for the per‐voxel second‐derivative diagonal (in \mathcal J‐space), shape (..., M, d)
-        d2phi = self.vtv.hessian_diag(U)            # (..., M, d)
+        num_singular_values = rank_one_fields.shape[-3]
 
-        #  f) Undo normalization
-        if self.normalise_gradients:
-            d2phi = d2phi / (norms ** 2)
-        elif self.global_normalise_gradients:
-            d2phi = d2phi / (norm_factors ** 2)
+        # 4. Initialize the final diagonal preconditioner tensor P.
+        #    The result should have the same shape as the input image array.
+        P_diag = torch.zeros_like(x_arr) if self.gpu else np.zeros_like(x_arr)
 
-        #  g) Multiply by s2 (the “sensitivity^2”) and sum over the last axis (directions)
-        #     That yields shape (nx,ny,nz,M).
-        diag = (d2phi * s2).sum(dim=-1) if self.gpu \
-            else (d2phi * s2).sum(axis=-1)
+        # 5. Loop over each singular mode k, calculate its contribution, and accumulate.
+        for k in range(num_singular_values):
+            # a) Get the field of rank-1 matrices for this mode
+            C_k_field = rank_one_fields[..., k, :, :]  # Shape: (nx, ny, nz, M, d)
 
+            # b) The formula is p_i = sum_k h''(s_k) * ( (J^T u_k v_k^T)_i )^2
+            #    The weights `w` are already baked into the SVD components (u_k, v_k, s_k).
+            #    The operator is effectively `wJ`. The adjoint is `(wJ)^T = J^T w`.
+            #    So we need to compute J^T (w * C_k).
+            
+            # The rank-one fields are u_k v_k^T from A=wJx. We need to compute J^T(w * u_k v_k^T).
+            # Since J is the gradient operator and w is a per-modality weight, J^T(w*...) is correct.
+            influence_image = self.jacobian.adjoint(w * C_k_field) # Shape: (nx, ny, nz, M)
 
-        return diag.abs()
+            # c) Get the corresponding h''(s_k) coefficients for this mode.
+            #    Shape: (nx, ny, nz)
+            h_double_prime_k = hess_coeffs[..., k]
 
-    def hessian_diag_arr(self, x):
-        x_arr = self.bdc2a.direct(x)                  # (nx,ny,nz,M)
-        return self._hess_diag_core(x_arr)            # (nx,ny,nz,M)
+            # d) Unsqueeze the coefficient to broadcast over the M modalities.
+            #    Shape becomes (nx, ny, nz, 1)
+            h_double_prime_k = h_double_prime_k.unsqueeze(-1) if self.gpu else np.expand_dims(h_double_prime_k, -1)
+
+            # e) Accumulate the contribution for this mode: h''(s_k) * (J^T u_k v_k^T)^2
+            P_diag += h_double_prime_k * (influence_image ** 2)
+
+        return P_diag
 
     def hessian_diag(self, x, out=None):
-        # We already have diag(\mathcal J‐space).  To get diag in “image‐space,”
-        # we multiply by weights^2 (because we inserted one w in front when building U).
-        diag_arr = self.hessian_diag_arr(x)           # (nx,ny,nz,M)
-        diag_arr = (self.weights ** 2) * diag_arr     # (nx,ny,nz,M)
-        result = self.bdc2a.adjoint(diag_arr)          # push back to BDC
+        """
+        Computes a diagonal approximation of the Hessian, suitable for preconditioning.
+        This method implements the formula:
+        p_i = sum_k h''(s_k) * ( (J^T u_k v_k^T)_i )^2
+        """
+        x_arr = self.bdc2a.direct(x)
+        diag_arr = self._preconditioner_weights_core(x_arr)
+        
+        # According to the derivation, no extra weighting is needed here.
+        # The weights `w` were correctly applied to the input of the SVD.
+        
+        result = self.bdc2a.adjoint(diag_arr)
         if out is not None:
             out.fill(result)
             return out
         return result
 
-    def inv_hessian_diag(self, x, out=None, epsilon=0.0):
-        # Just invert the array, then multiply by inv_weights^2, then push back
-        diag_arr = self.hessian_diag_arr(x) + epsilon
+    def inv_hessian_diag(self, x, out=None, epsilon=1e-9):
+        """
+        Computes the action of the inverse of the diagonal Hessian approximation.
+        This is a simple element-wise division by the preconditioner weights.
+        """
+        # 1. Get the preconditioner weights
+        diag_arr = self._preconditioner_weights_core(self.bdc2a.direct(x))
+        
+        # 2. Invert the weights, adding epsilon for stability
         if self.gpu:
-            inv_arr = torch.reciprocal(diag_arr)
+            inv_arr = torch.reciprocal(diag_arr + epsilon)
             torch.nan_to_num(inv_arr, nan=0.0, posinf=0.0, neginf=0.0, out=inv_arr)
         else:
-            inv_arr = np.reciprocal(diag_arr, where=diag_arr != 0)
-        inv_arr = (self.inv_weights ** 2) * inv_arr
+            inv_arr = np.reciprocal(diag_arr + epsilon)
+
+        # 3. Convert back to BlockDataContainer
         result = self.bdc2a.adjoint(inv_arr)
         if out is not None:
+            # Note: This operation does not apply to the input 'x', but returns a scaling array.
+            # The typical use is P^-1 * g. So here we return the scaling array.
+            # The calling function should multiply this by the gradient.
+            # To match the expected 'Function' API, perhaps it should act on x?
+            # Assuming the goal is to return the inverted diagonal P^-1 itself.
             out.fill(result)
             return out
         return result
+    
 
     def proximal(self, x, tau, out=None):
         x_arr = self.bdc2a.direct(x)                  # (nx,ny,nz,M)
-        J_raw = self.jacobian.direct(x_arr)           # (nx,ny,nz,M,d)
-
-        if self.global_normalise_gradients:
-            J, norm_factors = self._normalize_global(J_raw)
-        elif self.normalise_gradients:
-            norms = torch.linalg.norm(J_raw, dim=-1, keepdim=True).clamp_min(self.norm_eps) if self.gpu \
-                else np.linalg.norm(J_raw, axis=-1, keepdims=True).clip(min=self.norm_eps)
-            J = J_raw / norms
-        else:
-            J = J_raw
+        J = self.jacobian.direct(x_arr)           # (nx,ny,nz,M,d)
 
         w = self.weights.unsqueeze(-1)               # (...,M,1)
         U = w * J                                     # (...,M,d)
 
         proxU = self.vtv.proximal(U, tau)             # (...,M,d)
-
-        if self.normalise_gradients:
-            proxU = proxU / norms
-        elif self.global_normalise_gradients:
-            proxU = proxU / norm_factors
 
         # Push back to image space:
         ret = self.jacobian.adjoint(proxU * w)        # (nx,ny,nz,M)

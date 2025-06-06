@@ -614,8 +614,9 @@ def main() -> None:
     
         # Set delta (smoothing parameter) if not provided
     if args.delta is None:
-        # set delta as 1000 times smaller than maximum of the minimum dynamic range of initial images
-        args.delta = min(initial_estimates.containers[0].max(), initial_estimates.containers[1].max()) / 1e3
+        # set delta as 1000 times smaller than maximum of the minimum dynamic range of initial images 
+        # multiplied by the weighted alpha/beta
+        args.delta = min(args.alpha*initial_estimates.containers[0].max(), args.beta*initial_estimates.containers[1].max()) / 1e3
 
     save_args(args, "args.csv")
     

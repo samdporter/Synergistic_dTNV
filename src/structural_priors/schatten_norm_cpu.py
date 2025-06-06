@@ -5,11 +5,37 @@ from numba import njit, prange
 import numpy as np
 
 # -----------------------------------------------------------
-# 1) NUMBA-ACCELERATED HELPERS (updated Hessian & gradient)
+# 1) NUMBA-ACCELERATED HELPERS (Corrected Gradient and New Hessian)
 # -----------------------------------------------------------
 
+# --- Helper functions for smoothing terms ---
+@njit
+def h_fair(s, eps):
+    return eps * (s / (eps + 1e-9) - np.log(1.0 + s / (eps + 1e-9)))
+
+@njit
+def h_prime_fair(s, eps): # h'(s)
+    return s / (eps + s + 1e-9)
+
+@njit
+def h_double_prime_fair(s, eps): # h''(s)
+    return eps / (eps + s + 1e-9)**2
+
+@njit
+def h_charbonnier(s, eps):
+    return np.sqrt(s**2 + eps**2) - eps
+
+@njit
+def h_prime_charbonnier(s, eps): # h'(s)
+    return s / np.sqrt(s**2 + eps**2 + 1e-9)
+
+@njit
+def h_double_prime_charbonnier(s, eps): # h''(s)
+    return eps**2 / (s**2 + eps**2 + 1e-9)**1.5
+
+# --- Value Calculation ---
 @njit(parallel=True)
-def cpu_nuc_norm_fair(x, eps):
+def cpu_nuc_norm_sum(x, h_func, eps):
     acc = 0.0
     nx, ny, nz, _, _ = x.shape
     for i in prange(nx):
@@ -18,58 +44,15 @@ def cpu_nuc_norm_fair(x, eps):
                 block = x[i, j, k]
                 u, s, vt = np.linalg.svd(block, full_matrices=False)
                 for idx in range(s.size):
-                    σ = s[idx]
-                    acc += eps * (σ / eps - np.log(1.0 + σ / eps))
+                    acc += h_func(s[idx], eps)
     return acc
 
+# --- Corrected Gradient Calculation ---
 @njit(parallel=True)
-def cpu_nuc_norm_fair_no_sum(x, eps, out):
-    nx, ny, nz, _, _ = x.shape
-    for i in prange(nx):
-        for j in prange(ny):
-            for k in prange(nz):
-                block = x[i, j, k]
-                u, s, vt = np.linalg.svd(block, full_matrices=False)
-                acc = 0.0
-                for idx in range(s.size):
-                    σ = s[idx]
-                    acc += eps * (σ / eps - np.log(1.0 + σ / eps))
-                out[i, j, k] = acc
-
-@njit(parallel=True)
-def cpu_nuc_norm_charbonnier(x, eps):
-    acc = 0.0
-    nx, ny, nz, _, _ = x.shape
-    for i in prange(nx):
-        for j in prange(ny):
-            for k in prange(nz):
-                block = x[i, j, k]
-                u, s, vt = np.linalg.svd(block, full_matrices=False)
-                for idx in range(s.size):
-                    σ = s[idx]
-                    acc += np.sqrt(σ * σ + eps * eps) - eps
-    return acc
-
-@njit(parallel=True)
-def cpu_nuc_norm_charbonnier_no_sum(x, eps, out):
-    nx, ny, nz, _, _ = x.shape
-    for i in prange(nx):
-        for j in prange(ny):
-            for k in prange(nz):
-                block = x[i, j, k]
-                u, s, vt = np.linalg.svd(block, full_matrices=False)
-                acc = 0.0
-                for idx in range(s.size):
-                    σ = s[idx]
-                    acc += np.sqrt(σ * σ + eps * eps) - eps
-                out[i, j, k] = acc
-
-@njit(parallel=True)
-def cpu_nuc_norm_gradient_fair(x, eps, out_grad):
+def cpu_gradient(x, h_prime_func, eps, out_grad):
     """
-    Gradient of ∑ g(σ_i) with g(σ)=eps*(σ/eps − log(1+σ/eps)).
-    Correct derivative w.r.t M is U diag(g'(σ)/σ) Vᵀ.
-    Here g'(σ)=σ/(ε+σ) ⇒ g'(σ)/σ=1/(ε+σ).
+    Corrected Gradient of ∑ h(σ_i).
+    Derivative w.r.t matrix A is U @ diag(h'(σ)) @ V^T.
     """
     nx, ny, nz, M, d = x.shape
     for i in prange(nx):
@@ -78,28 +61,24 @@ def cpu_nuc_norm_gradient_fair(x, eps, out_grad):
                 block = x[i, j, k]
                 u, s, vt = np.linalg.svd(block, full_matrices=False)
                 r = s.size
-                diag_vals = np.zeros(r, dtype=block.dtype)
-                for idx in range(r):
-                    σ = s[idx]
-                    diag_vals[idx] = 1.0 / (eps + σ)  # = g'(σ)/σ
-                temp = np.zeros((M, r), dtype=block.dtype)
-                for p in range(M):
-                    for q in range(r):
-                        temp[p, q] = u[p, q] * diag_vals[q]
+                
+                # Directly compute h'(s_k)
+                diag_vals = h_prime_func(s, eps)
+                
+                # Reconstruct: U @ diag(h'(s)) @ V^T
+                temp = u * diag_vals # equivalent to u @ diag(diag_vals) for r=M
                 grad_block = temp @ vt
-                for p in range(M):
-                    for q in range(d):
-                        out_grad[i, j, k, p, q] = grad_block[p, q]
+                
+                # Store result
+                out_grad[i, j, k] = grad_block
 
+# --- New Hessian Components Calculation ---
 @njit(parallel=True)
-def cpu_nuc_norm_hessian_fair(x, eps, out_hess):
+def cpu_hessian_components(x, h_double_prime_func, eps, out_hess_coeffs, out_rank_one_fields):
     """
-    Hessian‐diag of ∑ g(σ_i) w.r.t. entries of M.
-    We need varphi''(μ)+2·varphi'(μ) at μ=σ².
-    For fair: g'(σ)=σ/(ε+σ), g''(σ)=ε/(ε+σ)².
-    ⇒ term1 = g''/(4σ²) = ε/(4σ² (ε+σ)²)
-    ⇒ term2 = ((4σ²−1)/(4σ³))·g'(σ) = (4σ²−1)/(4σ³)·(σ/(ε+σ)) = (4σ²−1)/(4σ² (ε+σ))
-    Sum = ε/(4σ² (ε+σ)²) + (4σ²−1)/(4σ² (ε+σ)).
+    Calculates the building blocks for the diagonal preconditioner.
+    1. Hessian coefficients: h''(s_k)
+    2. Basis matrices: u_k v_k^T for each singular mode k
     """
     nx, ny, nz, M, d = x.shape
     for i in prange(nx):
@@ -108,115 +87,21 @@ def cpu_nuc_norm_hessian_fair(x, eps, out_hess):
                 block = x[i, j, k]
                 u, s, vt = np.linalg.svd(block, full_matrices=False)
                 r = s.size
-                diag_vals = np.zeros(r, dtype=block.dtype)
-                for idx in range(r):
-                    σ = s[idx]
-                    if σ == 0.0:
-                        diag_vals[idx] = 0.0
-                    else:
-                        # g'' = ε/(ε+σ)²
-                        gpp = eps / ((eps + σ) * (eps + σ))
-                        # g' = σ/(ε+σ)
-                        gp = σ / (eps + σ)
-                        term1 = gpp / (4.0 * σ * σ)
-                        term2 = ((4.0 * σ * σ - 1.0) / (4.0 * σ * σ * σ)) * gp
-                        diag_vals[idx] = term1 + term2
-                temp = np.zeros((M, r), dtype=block.dtype)
-                for p in range(M):
-                    for q in range(r):
-                        temp[p, q] = u[p, q] * diag_vals[q]
-                hess_block = temp @ vt
-                for p in range(M):
-                    for q in range(d):
-                        out_hess[i, j, k, p, q] = hess_block[p, q]
 
-@njit(parallel=True)
-def cpu_nuc_norm_gradient_charbonnier(x, eps, out_grad):
-    """
-    Gradient of ∑ g(σ) with g(σ)=√(σ²+ε²)−ε.
-    g'(σ)=σ/√(σ²+ε²), so g'(σ)/σ = 1/√(σ²+ε²).
-    """
-    nx, ny, nz, M, d = x.shape
-    for i in prange(nx):
-        for j in prange(ny):
-            for k in prange(nz):
-                block = x[i, j, k]
-                u, s, vt = np.linalg.svd(block, full_matrices=False)
-                r = s.size
-                diag_vals = np.zeros(r, dtype=block.dtype)
-                for idx in range(r):
-                    σ = s[idx]
-                    diag_vals[idx] = 1.0 / np.sqrt(σ * σ + eps * eps)  # = g'(σ)/σ
-                temp = np.zeros((M, r), dtype=block.dtype)
-                for p in range(M):
-                    for q in range(r):
-                        temp[p, q] = u[p, q] * diag_vals[q]
-                grad_block = temp @ vt
-                for p in range(M):
-                    for q in range(d):
-                        out_grad[i, j, k, p, q] = grad_block[p, q]
+                # 1. Calculate and store Hessian coefficients h''(s_k)
+                hess_coeffs_k = h_double_prime_func(s, eps)
+                out_hess_coeffs[i, j, k, :r] = hess_coeffs_k
 
-@njit(parallel=True)
-def cpu_nuc_norm_hessian_charbonnier(x, eps, out_hess):
-    """
-    Hessian‐diag of ∑ g(σ) with g(σ)=√(σ²+ε²)−ε.
-    g'(σ)=σ/√(σ²+ε²), g''(σ)=ε²/(σ²+ε²)^(3/2).
-    term1 = g''/(4σ²) = [ε²/(σ²+ε²)^(3/2)] / (4σ²)
-    term2 = ((4σ²−1)/(4σ³))·g'(σ) = (4σ²−1)/(4σ³)·(σ/√(σ²+ε²))
-    """
-    nx, ny, nz, M, d = x.shape
-    for i in prange(nx):
-        for j in prange(ny):
-            for k in prange(nz):
-                block = x[i, j, k]
-                u, s, vt = np.linalg.svd(block, full_matrices=False)
-                r = s.size
-                diag_vals = np.zeros(r, dtype=block.dtype)
-                for idx in range(r):
-                    σ = s[idx]
-                    if σ == 0.0:
-                        diag_vals[idx] = 0.0
-                    else:
-                        gpp = (eps * eps) / ((σ * σ + eps * eps) ** (1.5))
-                        gp = σ / np.sqrt(σ * σ + eps * eps)
-                        term1 = gpp / (4.0 * σ * σ)
-                        term2 = ((4.0 * σ * σ - 1.0) / (4.0 * σ * σ * σ)) * gp
-                        diag_vals[idx] = term1 + term2
-                temp = np.zeros((M, r), dtype=block.dtype)
-                for p in range(M):
-                    for q in range(r):
-                        temp[p, q] = u[p, q] * diag_vals[q]
-                hess_block = temp @ vt
-                for p in range(M):
-                    for q in range(d):
-                        out_hess[i, j, k, p, q] = hess_block[p, q]
+                # 2. Calculate and store rank-1 matrices u_k v_k^T
+                for k_idx in range(r):
+                    uk = u[:, k_idx:k_idx+1]      # Shape (M, 1)
+                    vk_t = vt[k_idx:k_idx+1, :]   # Shape (1, d)
+                    
+                    # Store outer product u_k @ v_k^T
+                    out_rank_one_fields[i, j, k, k_idx, :, :] = uk @ vk_t
 
-@njit(parallel=True)
-def cpu_nuc_norm(x):
-    acc = 0.0
-    nx, ny, nz, _, _ = x.shape
-    for i in prange(nx):
-        for j in prange(ny):
-            for k in prange(nz):
-                block = x[i, j, k]
-                _, s, _ = np.linalg.svd(block, full_matrices=False)
-                for idx in range(s.size):
-                    acc += s[idx]
-    return acc
 
-@njit(parallel=True)
-def cpu_nuc_norm_no_sum(x, out):
-    nx, ny, nz, _, _ = x.shape
-    for i in prange(nx):
-        for j in prange(ny):
-            for k in prange(nz):
-                block = x[i, j, k]
-                _, s, _ = np.linalg.svd(block, full_matrices=False)
-                acc = 0.0
-                for idx in range(s.size):
-                    acc += s[idx]
-                out[i, j, k] = acc
-
+# --- Proximal Calculation (Unchanged) ---
 @njit(parallel=True)
 def cpu_nuc_norm_proximal(x, tau, out):
     nx, ny, nz, M, d = x.shape
@@ -230,32 +115,14 @@ def cpu_nuc_norm_proximal(x, tau, out):
                 for idx in range(r):
                     val = s[idx] - tau
                     diag_vals[idx] = val if val > 0.0 else 0.0
-                temp = np.zeros((M, r), dtype=block.dtype)
-                for p in range(M):
-                    for q in range(r):
-                        temp[p, q] = u[p, q] * diag_vals[q]
+                
+                temp = u * diag_vals # u @ diag(...)
                 prox_block = temp @ vt
-                for p in range(M):
-                    for q in range(d):
-                        out[i, j, k, p, q] = prox_block[p, q]
-
-@njit(parallel=True)
-def cpu_nuc_norm_convex_conjugate(x):
-    acc = 0.0
-    nx, ny, nz, _, _ = x.shape
-    for i in prange(nx):
-        for j in prange(ny):
-            for k in prange(nz):
-                block = x[i, j, k]
-                _, s, _ = np.linalg.svd(block, full_matrices=False)
-                for idx in range(s.size):
-                    σ = s[idx]
-                    acc += (σ if σ < 1.0 else 1.0)
-    return acc
+                out[i, j, k] = prox_block
 
 
 # -----------------------------------------------------------
-# 2) CLASS DEFINITION (CPU-only)
+# 2) CLASS DEFINITION (CPU-only) - Updated
 # -----------------------------------------------------------
 
 class CPUVectorialTotalVariation(Function):
@@ -265,55 +132,68 @@ class CPUVectorialTotalVariation(Function):
     """
 
     def __init__(self, eps, smoothing_function='fair'):
+        super(CPUVectorialTotalVariation, self).__init__()
         self.eps = eps
         self.smoothing_function = smoothing_function
 
-    def __call__(self, x):
+        # Select the correct functions based on smoothing type
         if self.smoothing_function == 'fair':
-            return cpu_nuc_norm_fair(x, self.eps)
+            self.h_func = h_fair
+            self.h_prime_func = h_prime_fair
+            self.h_double_prime_func = h_double_prime_fair
         elif self.smoothing_function == 'charbonnier':
-            return cpu_nuc_norm_charbonnier(x, self.eps)
+            self.h_func = h_charbonnier
+            self.h_prime_func = h_prime_charbonnier
+            self.h_double_prime_func = h_double_prime_charbonnier
         else:
-            return cpu_nuc_norm(x)
+            # Fallback for pure nuclear norm (no smoothing)
+            # h(s)=s, h'(s)=1, h''(s)=0
+            self.h_func = lambda s, eps: s
+            self.h_prime_func = lambda s, eps: np.ones_like(s)
+            self.h_double_prime_func = lambda s, eps: np.zeros_like(s)
 
-    def call_no_sum(self, x, out=None):
+    def __call__(self, x):
+        return cpu_nuc_norm_sum(x, self.h_func, self.eps)
+
+    def gradient(self, x, out=None):
         if out is None:
-            out = np.zeros(x.shape[:3], dtype=x.dtype)
-        if self.smoothing_function == 'fair':
-            cpu_nuc_norm_fair_no_sum(x, self.eps, out)
-        elif self.smoothing_function == 'charbonnier':
-            cpu_nuc_norm_charbonnier_no_sum(x, self.eps, out)
-        else:
-            cpu_nuc_norm_no_sum(x, out)
+            out = np.zeros_like(x)
+        cpu_gradient(x, self.h_prime_func, self.eps, out)
         return out
 
-    def gradient(self, x, out_grad=None):
-        if out_grad is None:
-            out_grad = np.zeros(x.shape, dtype=x.dtype)
-        if self.smoothing_function == 'fair':
-            cpu_nuc_norm_gradient_fair(x, self.eps, out_grad)
-        elif self.smoothing_function == 'charbonnier':
-            cpu_nuc_norm_gradient_charbonnier(x, self.eps, out_grad)
-        else:
-            raise ValueError("Gradient only defined if smoothing_function is 'fair' or 'charbonnier'")
-        return out_grad
+    def hessian_components(self, x):
+        """
+        Calculates and returns the components needed for the diagonal preconditioner.
 
-    def hessian(self, x, out_hess=None):
-        if out_hess is None:
-            out_hess = np.zeros(x.shape, dtype=x.dtype)
-        if self.smoothing_function == 'fair':
-            cpu_nuc_norm_hessian_fair(x, self.eps, out_hess)
-        elif self.smoothing_function == 'charbonnier':
-            cpu_nuc_norm_hessian_charbonnier(x, self.eps, out_hess)
-        else:
-            raise ValueError("Hessian only defined if smoothing_function is 'fair' or 'charbonnier'")
-        return out_hess
+        Args:
+            x (np.ndarray): The field of Jacobian matrices, shape (nx, ny, nz, M, d).
 
-    def proximal(self, x, tau, out_prox=None):
-        if out_prox is None:
-            out_prox = np.zeros(x.shape, dtype=x.dtype)
-        cpu_nuc_norm_proximal(x, tau, out_prox)
-        return out_prox
+        Returns:
+            tuple: A tuple containing:
+                - out_hess_coeffs (np.ndarray): The Hessian coefficients h''(s_k).
+                  Shape: (nx, ny, nz, r), where r=min(M,d).
+                - out_rank_one_fields (np.ndarray): The basis matrices u_k v_k^T.
+                  Shape: (nx, ny, nz, r, M, d).
+        """
+        # Determine the rank r = min(M,d)
+        r = min(x.shape[-2], x.shape[-1])
+        
+        # Allocate output arrays
+        out_hess_coeffs = np.zeros(x.shape[:-2] + (r,), dtype=x.dtype)
+        out_rank_one_fields = np.zeros(x.shape[:-2] + (r,) + x.shape[-2:], dtype=x.dtype)
+        
+        cpu_hessian_components(
+            x,
+            self.h_double_prime_func,
+            self.eps,
+            out_hess_coeffs,
+            out_rank_one_fields
+        )
+        return out_hess_coeffs, out_rank_one_fields
 
-    def convex_conjugate(self, x):
-        return cpu_nuc_norm_convex_conjugate(x)
+    def proximal(self, x, tau, out=None):
+        if out is None:
+            out = np.zeros_like(x)
+        # Note: Proximal operator is for the non-smoothed L1 norm of singular values
+        cpu_nuc_norm_proximal(x, tau, out)
+        return out
