@@ -164,6 +164,7 @@ def parse_arguments() -> argparse.Namespace:
         default=True,
         help="Do not keep all views in cache",
     )
+    parser.add_argument("--profile", action="store_true", help="Enable profiling")
     return parser.parse_known_args()[0]
 
 
@@ -447,7 +448,7 @@ def get_prior(
         args.delta,
         anatomical=umap,
         gpu=not args.no_gpu,
-        stable=False,
+        stable=True,
         tail_singular_values=args.tail_singular_values, 
     )
     prior = OperatorCompositionFunction(vtv, bo)
@@ -801,16 +802,22 @@ def main() -> None:
 #%%
 if __name__ == "__main__":
 
-    # set up profiler
-    profiler = cProfile.Profile()
-    profiler.enable()
-    
-    main()
+    if args.profile:
+        logging.info("Profiling is enabled. This may slow down the execution.")
+        profiler = cProfile.Profile()
+        profiler.enable()
+        
+        main()
 
-    profiler.disable()
-    # Output results to a file
-    output_file = os.path.join(args.output_path, "profiling_results.txt")
-    with open(output_file, "w") as f:
-        ps = pstats.Stats(profiler, stream=f)
-        ps.strip_dirs().sort_stats("cumulative").print_stats()
-    logging.info(f"Profiling results saved to {output_file}")
+        profiler.disable()
+        profiler.dump_stats(args.output_path + '/profile_data.prof')
+        # Output results to a file
+        output_file = os.path.join(args.output_path, "profiling_results.txt")
+        with open(output_file, "w") as f:
+            ps = pstats.Stats(profiler, stream=f)
+            ps.strip_dirs().sort_stats("cumulative").print_stats()
+        logging.info(f"Profiling results saved to {output_file}")
+    else:
+        logging.info("Profiling is disabled.")
+        main()
+    logging.info("Execution completed.")

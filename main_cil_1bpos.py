@@ -94,11 +94,6 @@ def parse_arguments() -> argparse.Namespace:
         help="Number of largest singular values to keep"
     )
     parser.add_argument(
-        "--normalise_gradients",
-        action="store_true",
-        help="Normalise gradients",
-    )
-    parser.add_argument(
         "--pet_gauss_fwhm",
         type=float,
         nargs=3,
@@ -157,6 +152,7 @@ def parse_arguments() -> argparse.Namespace:
         default=True,
         help="Do not keep all views in cache",
     )
+    parser.add_argument("--profile", action="store_true", help="Enable profiling")
     return parser.parse_args()
 
 
@@ -355,9 +351,8 @@ def get_prior(
         args.delta,
         anatomical=ct,
         gpu=not args.no_gpu,
-        stable=False,
+        stable=True,
         tail_singular_values=args.tail_singular_values, 
-        normalise_gradients=args.normalise_gradients,
     )
     prior = OperatorCompositionFunction(vtv, bo)
     return prior
@@ -706,14 +701,21 @@ def main() -> None:
 
 if __name__ == "__main__":
 
-    profiler = cProfile.Profile()
-    profiler.enable()
-    main()
-    profiler.disable()
-    profiler.dump_stats('profile_data.prof')
+    if args.profile:
+        logging.info("Profiling is enabled. This may slow down the execution.")
+        profiler = cProfile.Profile()
+        profiler.enable()
+        main()
+        profiler.disable()
+        profiler.dump_stats(args.output_path + '/profile_data.prof')
 
-    with open('profiling_results.txt', 'w') as f:
-        ps = pstats.Stats(profiler, stream=f)
-        ps.strip_dirs()                 # remove extraneous path info
-        ps.sort_stats('cumulative')     # sort by cumulative time
-        ps.print_stats(None)            # print *every* function
+        with open(args.output_path + '/profiling_results.txt', 'w') as f:
+            logging.info("Writing profiling results to 'profiling_results.txt'")
+            ps = pstats.Stats(profiler, stream=f)
+            ps.strip_dirs()                 # remove extraneous path info
+            ps.sort_stats('cumulative')     # sort by cumulative time
+            ps.print_stats(None)            # print *every* function
+    else:
+        logging.info("Profiling disabled.")
+        main()
+    logging.info("Execution completed.")
