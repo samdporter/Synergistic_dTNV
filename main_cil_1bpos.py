@@ -69,7 +69,7 @@ def parse_spect_res(x):
 def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="BSREM")
-    parser.add_argument("--alpha", type=float, default=None, help="alpha")
+    parser.add_argument("--alpha", type=float, default=1, help="alpha")
     parser.add_argument("--beta", type=float, default=1, help="beta")
     parser.add_argument("--delta", type=float, default=None, help="delta")
     parser.add_argument(
@@ -116,7 +116,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--pet_data_path",
         type=str,
-        default="/home/storage/prepared_data/phantom_data/anthropomorphic_phantom_data/PET/phantom",
+        default="/home/storage/prepared_data/phantom_data/anthropomorphic_phantom_data/PET/phantom_short",
         help="pet data path",
     )
     parser.add_argument(
@@ -484,8 +484,9 @@ def get_preconditioners(
     
     bsrem_precond = BSREMPreconditioner(
         s_inv, 1, np.inf, 
-        epsilon=0,
+        epsilon=minmax_val / 1000,
         max_vals=max_vals,
+        smooth=True,
     )
     if prior is None:
         return bsrem_precond
@@ -497,7 +498,7 @@ def get_preconditioners(
         freeze_iter=np.inf,
     )
     
-    precond = HarmonicMeanPreconditioner(
+    precond = ClampedHarmonicMeanPreconditioner(
         [bsrem_precond, prior_precond],
         update_interval=update_interval,
         freeze_iter=len(all_funs) * 10,
@@ -593,12 +594,11 @@ def main() -> None:
     # Data preparation.
     ct, pet_data, spect_data = prepare_data(args)
     
-    if args.alpha is None:
-        # find alpha using dynamic range of the initial images (95th percentile)
-        pet_max = np.percentile(pet_data["initial_image"].as_array(), 95)
-        spect_max = np.percentile(spect_data["initial_image"].as_array(), 95)
-        args.alpha = spect_max / pet_max
-        logging.info(f"Setting alpha to {args.alpha} based on initial images")
+    # find alpha using dynamic range of the initial images (95th percentile)
+    pet_max = np.percentile(pet_data["initial_image"].as_array(), 95)
+    spect_max = np.percentile(spect_data["initial_image"].as_array(), 95)
+    args.alpha*= spect_max / pet_max
+    logging.info(f"Setting alpha to {args.alpha} based on initial images")
         
     initial_estimates = EnhancedBlockDataContainer(
         pet_data["initial_image"], spect_data["initial_image"]

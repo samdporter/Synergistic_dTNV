@@ -1,7 +1,8 @@
 import os
 import numpy as np
 import logging
-from typing import List, Dict
+from pathlib import Path
+from typing import Dict, List, Any, Optional
 from sirf.STIR import AcquisitionData, ImageData
 
 AcquisitionData.set_storage_scheme("memory")
@@ -100,84 +101,59 @@ def get_pet_data(path: str, suffix: str = "") -> dict:
     return pet_data
 
 
-def get_pet_data_multiple_bed_pos(path: str, suffixes: List[str], tof=False) -> Dict[str, object]:
+from pathlib import Path
+from typing import Dict, List, Optional
+
+def get_pet_data_multiple_bed_pos(path: str, suffixes: List[str], tof: bool = False) -> Dict[str, object]:
     """
-    Load PET data for multiple bed positions from the given path.
-    
-    For each suffix in the list, a dictionary is created with keys:
-    "acquisition_data", "additive", "normalisation", "attenuation",
-    and "spect". The "initial_image" is created per bed position using the same
-    fallback strategy (try initial image, then template image, then a uniform image).
-    
-    The outer dictionary contains:
-        "bed_positions": A dictionary mapping each suffix to its data dictionary.
-        "initial_image": A combined initial image (obtained by summing the individual
-                         initial images) over all bed positions.
-    
-    Args:
-        path (str): Path to the data directory.
-        suffixes (List[str]): List of suffixes for different bed positions.
-    
-    Returns:
-        dict: A dictionary with keys "bed_positions" and "initial_image".
+    Load PET data for multiple bed positions.
+
+    Returns a dict with:
+      - "attenuation", "template_image", "initial_image", "spect" (optional)
+      - "bed_positions": mapping suffix → dict with keys
+         "acquisition_data", "additive", "normalisation",
+         "template_image", "initial_image", "attenuation", "spect" (optional)
     """
-    
-    tof_str = "tof" if tof else "non_tof"    
-    
-    pet_data = {}
-    
-    ### Shared data across all bed positions ###
-    pet_data["attenuation"] = ImageData(os.path.join(path, f"umap_zoomed.hv"))
+    base = Path(path) / ("tof" if tof else "non_tof")
 
-    # Always load the template image.
-    template_img_path = os.path.join(path, f"template_image.hv")
-    try:
-        pet_data["template_image"] = ImageData(template_img_path)
-    except Exception as e_template:
-        logging.error("Failed to load PET template image (%s)", str(e_template))
-        raise RuntimeError("Unable to load PET template image.") from e_template
+    def load_image(fp: Path, clamp: bool = True, required: bool = False) -> Optional[ImageData]:
+        try:
+            img = ImageData(str(fp))
+            return img.maximum(0) if clamp else img
+        except Exception:
+            if required:
+                logging.error("Failed to load required image %s", fp)
+                raise
+            return None
 
-    # Try to load the initial image.
-    initial_img_path = os.path.join(path, tof_str, f"initial_image.hv")
-    try:
-        pet_data["initial_image"] = ImageData(initial_img_path).maximum(0)
-    except Exception as e_initial:
-        logging.warning("No PET initial image found (%s). Using uniform copy of template image.",
-                        str(e_initial))
-        pet_data["initial_image"] = pet_data["template_image"].get_uniform_copy(1)
+    def load_acq(fp: Path) -> AcquisitionData:
+        return AcquisitionData(str(fp))
 
-    try:
-        pet_data["spect"] = ImageData(os.path.join(path, "spect.hv"))
-    except Exception as e_spect:
-        logging.info("No SPECT guidance image found for PET: %s", str(e_spect))
-        
-        
-    ### Data for each bed position ###
-    pet_data["bed_positions"] = {}
-    for suffix in suffixes:
-        bed_data = {}
-        bed_data["acquisition_data"] = AcquisitionData(
-            os.path.join(path, tof_str, f"prompts{suffix}.hs")
-        )
-        bed_data["additive"] = AcquisitionData(
-            os.path.join(path, tof_str, f"additive_term{suffix}.hs")
-        )
-        bed_data["normalisation"] = AcquisitionData(
-            os.path.join(path, tof_str, f"mult_factors{suffix}.hs")
-        )
-        bed_data["template_image"] = ImageData(
-            os.path.join(path, f"template_image{suffix}.hv")
-        )
-        bed_data["initial_image"] = ImageData(
-            os.path.join(path, tof_str, f"initial_image{suffix}.hv")
-        ).maximum(0)
-        bed_data["attenuation"] = ImageData(
-            os.path.join(path, f"umap{suffix}.hv")
-        )
+    # shared data
+    pet_data: Dict[str, object] = {}
+    pet_data["attenuation"]    = load_image(base / "umap_zoomed.hv")
+    pet_data["template_image"] = load_image(base / "template_image.hv", clamp=False, required=True)
+    pet_data["initial_image"]  = load_image(base / "initial_image.hv") \
+                                  or pet_data["template_image"].get_uniform_copy(1)
+    pet_data["spect"]          = load_image(base / "spect.hv", clamp=False)
 
-        pet_data["bed_positions"][suffix] = bed_data
-        
+    # per‐bed data
+    beds: Dict[str, Dict[str, object]] = {}
+    for suf in suffixes:
+        bp = {}
+        bp["acquisition_data"] = load_acq(base / f"prompts{suf}.hs")
+        bp["additive"]         = load_acq(base / f"additive_term{suf}.hs")
+        bp["normalisation"]    = load_acq(base / f"mult_factors{suf}.hs")
+        bp["template_image"]   = load_image(base / f"template_image{suf}.hv", clamp=False, required=True)
+        bp["initial_image"]    = load_image(base / f"initial_image{suf}.hv") \
+                                  or bp["template_image"].get_uniform_copy(1)
+        bp["attenuation"]      = load_image(base / f"umap{suf}.hv")
+        bp["spect"]            = load_image(base / f"spect{suf}.hv", clamp=False)
+        beds[suf] = bp
+
+    pet_data["bed_positions"] = beds
     return pet_data
+
         
 def get_spect_data(path: str) -> dict:
     """

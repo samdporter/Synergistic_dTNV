@@ -46,50 +46,50 @@ def charbonnier_torch(x, eps):
 
 def charbonnier_grad_torch(x, eps):
     # Add small epsilon to denominator for stability
-    return x / torch.sqrt(x ** 2 + eps ** 2 + 1e-9)
+    return x / torch.sqrt(x ** 2 + eps ** 2 )
 
 
 def charbonnier_hessian_diag_torch(x, eps):
     # Returns g''(σ) for Charbonnier: eps²/(σ² + eps²)^(3/2)
-    return eps ** 2 / (x ** 2 + eps ** 2 + 1e-9) ** 1.5
+    return eps ** 2 / (x ** 2 + eps ** 2 ) ** 1.5
 
 
 def charbonnier_inv_hessian_diag_torch(x, eps):
-    return (x ** 2 + eps ** 2 + 1e-9) ** 1.5 / (eps ** 2 + 1e-9)
+    return (x ** 2 + eps ** 2 ) ** 1.5 / (eps ** 2 )
 
 
 def fair_torch(x, eps):
-    return eps * (torch.abs(x) / (eps + 1e-9) - torch.log1p(torch.abs(x) / (eps + 1e-9)))
+    return eps * (torch.abs(x) / (eps ) - torch.log1p(torch.abs(x) / (eps )))
 
 
 def fair_grad_torch(x, eps):
-    return x / (eps + torch.abs(x) + 1e-9)
+    return x / (eps + torch.abs(x) )
 
 
 def fair_hessian_diag_torch(x, eps):
     # Returns g''(σ) for Fair: eps/(eps + |σ|)^2
-    return eps / (eps + torch.abs(x) + 1e-9) ** 2
+    return eps / (eps + torch.abs(x) ) ** 2
 
 
 def fair_inv_hessian_diag_torch(x, eps):
-    return (eps + torch.abs(x) + 1e-9) ** 2 / (eps + 1e-9)
+    return (eps + torch.abs(x) ) ** 2 / (eps )
 
 
 def perona_malik_torch(x, eps):
-    return (eps / 2) * (1 - torch.exp(-x ** 2 / (eps ** 2 + 1e-9)))
+    return (eps / 2) * (1 - torch.exp(-x ** 2 / (eps ** 2 )))
 
 
 def perona_malik_grad_torch(x, eps):
-    return x * torch.exp(-x ** 2 / (eps ** 2 + 1e-9)) / (eps ** 2 + 1e-9)
+    return x * torch.exp(-x ** 2 / (eps ** 2 )) / (eps ** 2 )
 
 
 def perona_malik_hessian_diag_torch(x, eps):
     # Returns g''(σ) for Perona-Malik: (eps² − 2σ²) e^(−σ²/eps²)/eps³
-    return (eps ** 2 - 2 * x ** 2) * torch.exp(-x ** 2 / (eps ** 2 + 1e-9)) / (eps ** 3 + 1e-9)
+    return (eps ** 2 - 2 * x ** 2) * torch.exp(-x ** 2 / (eps ** 2 )) / (eps ** 3 )
 
 
 def perona_malik_inv_hessian_diag_torch(x, eps):
-    return (eps ** 3 + 1e-9) * torch.exp(x ** 2 / (eps ** 2 + 1e-9)) / (eps ** 2 - 2 * x ** 2 + 1e-9)
+    return (eps ** 3 ) * torch.exp(x ** 2 / (eps ** 2 )) / (eps ** 2 - 2 * x ** 2 )
 
 
 def nothing_torch(x, eps=0):

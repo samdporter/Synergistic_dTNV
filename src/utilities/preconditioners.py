@@ -68,7 +68,7 @@ class BSREMPreconditioner(PreconditionerWithInterval):
     def compute_preconditioner(self, algorithm, out=None):
         if out is None:
             out = algorithm.solution.copy()
-        x = algorithm.x
+        x = algorithm.solution.copy()
         if self.max_vals is not None:
             if isinstance(x, BlockDataContainer):
                 for i, el in enumerate(out.containers):
@@ -227,7 +227,7 @@ class SubsetEMPreconditioner(SubsetPreconditioner):
             adj = self.sensitivities[algorithm.f.function.data_passes_indices[-1][0]]
         else:
             adj = self.sensitivities[algorithm.f.data_passes_indices[-1][0]]
-        out.fill(algorithm.x / (adj + self.epsilon))
+        out.fill(algorithm.solution / (adj + self.epsilon))
         return out
 
 
@@ -252,7 +252,7 @@ class SubsetKernelisedEMPreconditioner(SubsetPreconditioner):
         if out is None:
             out = algorithm.solution.copy()
         if algorithm.iteration % self.update_interval == 0 or self.precond is None:
-            self.precond = self.compute_preconditioner(algorithm)
+            self.precond = self.compute_preconditioner(algorithm).abs()
         out.fill(gradient * self.precond)
         return out
 
@@ -267,19 +267,5 @@ class SubsetKernelisedEMPreconditioner(SubsetPreconditioner):
             adj = self.sensitivities[algorithm.f.function.data_passes_indices[-1][0]]
         else:
             adj = self.sensitivities[algorithm.f.data_passes_indices[-1][0]]
-        out.fill(algorithm.x / (self.kernel.adjoint(adj) + self.epsilon) / self.num_subsets)
+        out.fill(algorithm.solution / (self.kernel.adjoint(adj)+ self.epsilon))
         return out
-
-class SubsetMultipleKernelisedEMPreconditioner(SubsetPreconditioner):
-    """
-    Subset preconditioner for (hybrid) kernelised EM.
-    Can be used for OS(H)KEM with sequential sampler or for stochastic (H)KEM with random sampler.
-    """
-    def __init__(self, num_subsets, sensitivities, kernels, update_interval=1, freeze_iter=np.inf, epsilon=1e-6):
-        super().__init__(num_subsets, update_interval, freeze_iter=np.inf)
-        self.counter = 0
-        self.sensitivities = sensitivities
-        self.kernels = kernels
-        self.epsilon = epsilon
-        self.frozen_alpha = None
-        self.freeze_kernel_iter = freeze_iter
